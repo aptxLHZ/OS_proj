@@ -343,3 +343,38 @@ def hard_delete(parent_path, filename):
     from disk_core import write_block
     write_block(parent_block, dir_data)
     print(f"[-] 文件 '{filename}' 已物理清空并彻底删除")
+    
+def show_disk_map():
+    """磁盘物理块可视化监控：打印前 100 个物理盘块的占用图谱"""
+    # 标志说明: B=引导块, S=超级块, I=i节点区, D=已占用数据块, .=空闲数据块
+    disk_map = ["."] * 100
+    
+    # 1. 标记保留区
+    disk_map[0] = "B" # Block 0: Boot
+    disk_map[1] = "S" # Block 1: Superblock
+    for i in range(2, 34):
+        disk_map[i] = "I" # Block 2~33: Inode Area
+        
+    # 2. 扫描所有 512 个 i 节点，找出哪些数据块被文件/目录占用了
+    for ino in range(512):
+        try:
+            inode_info = get_inode(ino)
+            mode = inode_info[0]
+            if mode != 0: # 如果 inode 被占用
+                # 遍历其 di_addr[0] ~ di_addr[9]
+                for block in inode_info[5:15]:
+                    if block != 0 and block < 100: # 只展示前 100 个块
+                        disk_map[block] = "D"
+        except Exception:
+            pass
+            
+    # 3. 打印图谱
+    print("\n==================== 磁盘前100个物理盘块状态图谱 ==================")
+    print(" 标志说明: [B]:引导区 | [S]:超级块 | [I]:i节点区 | [D]:数据已占用 | [.]:空闲")
+    print("------------------------------------------------------------------")
+    # 每 20 个块打印一行
+    for r in range(5):
+        row = disk_map[r*20 : (r+1)*20]
+        row_str = " ".join([f"[{char}]" if char != "." else " . " for char in row])
+        print(f"Blocks {r*20:02d}~{(r+1)*20-1:02d}:  {row_str}")
+    print("==================================================================\n")
