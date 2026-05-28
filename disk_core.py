@@ -13,6 +13,8 @@ NICINOD = 50
 DINODESTART = 2 * BLOCKSIZ 
 DINODEBLK = 32
 DATASTART = (2 + DINODEBLK) * BLOCKSIZ
+SYSOPENFILE = 40  # 系统打开文件表最大长度
+NOFILE = 20       # 用户打开文件表最大长度 (单个用户最多同时打开 20 个文件)
 
 # --- 2. 结构体二进制打包格式定义 ---
 # i 节点格式: H(type), h(nlink), H(uid), H(gid), I(size), 10H(addr) -> 总共 32 字节
