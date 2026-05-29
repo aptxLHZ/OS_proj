@@ -13,7 +13,7 @@ from api import (
     compress, decompress
 )
 import getpass
-
+import eel
 
 def inject_crash():
     """【黑客级物理注入】：精准注入 Inode 身份窃取故障"""
@@ -272,6 +272,20 @@ def start_shell():
         except Exception as e:
             print(f"[!] 发生错误: {e}")
 
+@eel.expose
+def get_kernel_info():
+    from disk_core import super_block_memory
+    return f"空闲盘块={super_block_memory['nfree']}, 空闲i节点={super_block_memory['ninode']}"
+
+def start_gui():
+    """启动 Web OS 桌面"""
+    print("[*] 正在启动 myOS 图形化桌面引擎...")
+    # 指定前端资源文件夹
+    eel.init('web')
+    # 弹出一个 1024x768 的窗口，并禁用浏览器默认的控制台等特性
+    eel.start('index.html', size=(1024, 768), mode='chrome', port=0)
+    
+
 if __name__ == "__main__":
     # 如果 data/ 目录下文件坏了或者没有，自动执行初始化
     from disk_core import DISK_A, DISK_B, load_superblock, save_superblock
@@ -288,7 +302,11 @@ if __name__ == "__main__":
     t = threading.Thread(target=daemon_flush_thread, daemon=True)
     t.start()
     
-    # 1. 引导开机登录
-    boot_login()
-    # 2. 验证通过，进入命令行 Shell
-    start_shell()
+    # ##命令行
+    # # 1. 引导开机登录
+    # boot_login()
+    # # 2. 验证通过，进入命令行Shell
+    # start_shell()
+    
+    #可视化
+    start_gui()

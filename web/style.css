@@ -1,0 +1,58 @@
+* { margin: 0; padding: 0; box-sizing: border-box; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+
+body {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    /* 给桌面换一个高级的深色渐变壁纸 */
+    background: linear-gradient(135deg, #1e1e2f, #2a2a4a);
+    color: white;
+    display: flex;
+    flex-direction: column;
+}
+
+#desktop {
+    flex: 1;
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#kernel-status {
+    text-align: center;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 30px;
+    border-radius: 15px;
+    backdrop-filter: blur(10px); /* 磨砂玻璃效果 */
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+}
+
+#kernel-status h1 { margin-bottom: 10px; font-size: 28px; letter-spacing: 2px;}
+#status-text { color: #4CAF50; font-weight: bold; font-size: 16px;}
+
+/* 底部任务栏 */
+#taskbar {
+    height: 60px;
+    background: rgba(20, 20, 30, 0.8);
+    backdrop-filter: blur(15px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.app-icon {
+    padding: 10px 20px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-weight: 500;
+}
+
+.app-icon:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-3px);
+}
