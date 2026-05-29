@@ -93,7 +93,7 @@ def chdir(path):
 def _soft_delete(parent_path, name, expected_mode):
     """
     通用软删除底层逻辑 (包含类型强校验与回收站边界拦截)
-    expected_mode: 1 代表目录，2 代表文件
+    expected_mode: 1 代表目录, 2 代表文件
     """
     global current_working_dir_inode
     trash_ino = namei("/.trash")
@@ -340,7 +340,7 @@ def write_file(fd, text_content):
     print(f"[+] fd={fd} 写入了 {len(data_bytes)} 字节，光标位置 -> {f_desc.f_offset}")
 
 def read_file(fd, size=None):
-    """基于文件描述符与光标读取数据"""
+    """基于文件描述符与光标读取数据 (💡 支持对压缩文件进行全自动、透明解压读取！)"""
     if fd < 0 or fd >= NOFILE or user_file_table[fd] is None:
         raise Exception("操作失败：无效的文件描述符")
         
@@ -351,19 +351,28 @@ def read_file(fd, size=None):
     disk_inode = mem_inode.disk_inode
     
     offset = f_desc.f_offset
-    file_size = disk_inode.size
     
-    if offset >= file_size:
-        return "" # 已经到文件末尾了
-        
-    # 如果不传入大小，默认把后面所有内容全读出来
-    read_size = file_size - offset if size is None else min(size, file_size - offset)
-    
+    # 💡 保护锁：如果文件的 mode == 3，说明是压缩状态，自动在内核内存中进行透明解压！
+    is_compressed = (disk_inode.mode == 3)
     block_no = disk_inode.addr[0]
     block_data = read_block(block_no)
     
-    text = block_data[offset : offset + read_size].decode('utf-8')
-    f_desc.f_offset += read_size # 读光标向后移动
+    if is_compressed:
+        compressed_size = disk_inode.size
+        # 自动调用解压引擎还原真实数据
+        actual_data = rle_decompress(block_data[:compressed_size])
+        file_size = len(actual_data)
+    else:
+        actual_data = block_data
+        file_size = disk_inode.size
+        
+    if offset >= file_size:
+        return "" # 读到末尾
+        
+    read_size = file_size - offset if size is None else min(size, file_size - offset)
+    
+    text = actual_data[offset : offset + read_size].decode('utf-8')
+    f_desc.f_offset += read_size # 移动读写指针
     return text
 
 def restore(filename):
@@ -638,3 +647,78 @@ def rename(parent_path, old_name, new_name):
     from disk_core import write_block
     write_block(parent_block, dir_data)
     print(f"[+] 成功将 '{old_name}' 重命名为 '{new_name}'")
+    
+from compressor import rle_compress, rle_decompress # 导入我们的 zlib 工业级压缩引擎
+
+def compress(filepath):
+    """【系统调用】：手动压缩文件，若压缩后变大则自动安全放弃"""
+    ino = namei(filepath)
+    inode_info = get_inode(ino)
+    
+    # 1. 状态校验
+    if inode_info[0] == 1:
+        raise Exception("操作失败：目录无法被压缩")
+    if inode_info[0] == 3:
+        raise Exception("操作失败：该文件已经是压缩状态，无需重复压缩")
+        
+    size = inode_info[4]
+    if size == 0:
+        raise Exception("操作失败：空文件无法被压缩")
+        
+    # 2. 读取原始数据
+    block_no = inode_info[5] # di_addr[0]
+    original_data = read_block(block_no)[:size] # 根据文件真实大小截取有效数据
+    
+    # 3. 尝试进行工业级压缩
+    compressed_data = rle_compress(original_data)
+    
+    # 💡 安全阀门检测（防膨胀保护）：如果压缩后反而变大或没变，直接安全放弃！
+    if len(compressed_data) >= len(original_data):
+        print(f"[!] 提示：文件 '{filepath}' (原大小:{size}B) 缺乏重复特征，压缩后({len(compressed_data)}B)无空间优化，系统已自动取消本次压缩。")
+        return
+        
+    # 4. 【写入物理磁盘】：将压缩后的二进制写回物理块
+    from disk_core import write_block
+    write_block(block_no, compressed_data.ljust(BLOCKSIZ, b'\x00'))
+    
+    # 5. 【修改元数据】：修改大小为【压缩后的大小】，并将 mode 置为 3 (压缩状态)
+    from disk_core import DiskInode
+    from kernel import write_inode
+    compressed_inode = DiskInode(
+        mode=3, nlink=inode_info[1], uid=inode_info[2], gid=inode_info[3], 
+        size=len(compressed_data), addr=[block_no] + list(inode_info[6:15])
+    )
+    write_inode(ino, compressed_inode)
+    
+    saved_bytes = size - len(compressed_data)
+    print(f"[+] '{filepath}' 压缩成功！原大小: {size}B -> 压缩后: {len(compressed_data)}B，直接节省了 {saved_bytes} 字节物理磁盘空间！")
+
+def decompress(filepath):
+    """【系统调用】：解压已被压缩的文件"""
+    ino = namei(filepath)
+    inode_info = get_inode(ino)
+    
+    if inode_info[0] != 3:
+        raise Exception("操作失败：该文件当前处于未压缩状态，无法执行解压")
+        
+    size = inode_info[4] # 当前记录的压缩后的大小
+    block_no = inode_info[5]
+    compressed_data = read_block(block_no)[:size]
+    
+    # 1. 调用引擎解码还原
+    decompressed_data = rle_decompress(compressed_data)
+    
+    # 2. 物理写入原大小数据
+    from disk_core import write_block
+    write_block(block_no, decompressed_data.ljust(BLOCKSIZ, b'\x00'))
+    
+    # 3. 还原 Inode：mode 变回 2 (普通文件)，size 变回原始大小
+    from disk_core import DiskInode
+    from kernel import write_inode
+    original_inode = DiskInode(
+        mode=2, nlink=inode_info[1], uid=inode_info[2], gid=inode_info[3], 
+        size=len(decompressed_data), addr=[block_no] + list(inode_info[6:15])
+    )
+    write_inode(ino, original_inode)
+    
+    print(f"[+] '{filepath}' 已成功解压还原！恢复大小: {len(decompressed_data)}B。")

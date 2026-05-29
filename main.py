@@ -6,7 +6,8 @@ from kernel import format_root_dir, get_current_user, set_current_user
 from api import (
     mkdir, rmdir, chdir, dir_list, create, delete, restore, hard_delete,
     open_file, close_file, write_file, read_file, show_disk_map,
-    current_working_dir_inode, login, logout, rename
+    current_working_dir_inode, login, logout, rename,
+    compress, decompress
 )
 import getpass
 
@@ -177,6 +178,16 @@ def start_shell():
                 logout()
                 #注销后重新拉起登录引导
                 boot_login()
+                
+            elif cmd == "compress":
+                if not args: print("用法: compress [path]"); continue
+                # 默认在当前工作目录进行压缩
+                compress(args[0])
+                
+            elif cmd == "decompress":
+                if not args: print("用法: decompress [path]"); continue
+                # 默认在当前工作目录进行解压
+                decompress(args[0]) 
                     
             else:
                 print(f"[!] 未知指令: {cmd}。输入 'help' 获取命令帮助。")
