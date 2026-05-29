@@ -32,6 +32,12 @@ super_block_memory = {
     'ninode': 0, 'inode': [0] * 50
 }
 
+# AB盘是否正常
+disk_a_healthy = True
+disk_b_healthy = True
+# 超级块脏标记 (当内存中的超级块状态发生变化时，置为 True，表示需要写回磁盘)
+superblock_dirty = False  
+
 class DiskInode:
     def __init__(self, mode=0, nlink=0, uid=0, gid=0, size=0, addr=None):
         self.mode = mode
@@ -83,7 +89,10 @@ def balloc():
         # print(f"正在从物理块 {block_no} 加载下一组空闲块...")
         # 实际开发中，这里要调用 read_block(block_no) 并更新 super_block_memory
         pass
-    save_superblock()
+    # save_superblock()
+    global superblock_dirty
+    superblock_dirty = True
+    
     return block_no
 
 def bfree(block_no):
@@ -97,7 +106,9 @@ def bfree(block_no):
         
     super_block_memory['free'][super_block_memory['nfree']] = block_no
     super_block_memory['nfree'] += 1
-    save_superblock()
+    # save_superblock()
+    global superblock_dirty
+    superblock_dirty = True
 
 def format_disk(filename):
     """初始化磁盘：建立成组链接结构"""
@@ -151,7 +162,10 @@ def ialloc():
     # 从栈顶弹出一个 i 节点号
     super_block_memory['ninode'] -= 1
     inode_no = super_block_memory['inode'][super_block_memory['ninode']]
-    save_superblock()
+    # save_superblock()
+    global superblock_dirty
+    superblock_dirty = True
+    
     return inode_no
 
 def ifree(inode_no):
@@ -165,7 +179,9 @@ def ifree(inode_no):
     else:
         # 如果栈满了，可以考虑把它存回磁盘的某个位置 (类似成组链接)
         pass
-    save_superblock()
+    # save_superblock()
+    global superblock_dirty
+    superblock_dirty = True
 
 def init_inode_stack():
     """将前 50 个 i 节点压入超级块的空闲栈"""
@@ -209,17 +225,50 @@ def sync_format_all():
     
     
 def write_block(block_no, data):
-    """底层物理读写：自动双写 disk_A 和 disk_B"""
-    for disk in [DISK_A, DISK_B]:
-        with open(disk, "r+b") as f:
-            f.seek(block_no * BLOCKSIZ)
-            f.write(data)
+    """物理写盘块：支持 RAID-1 双盘智能双写"""
+    global disk_a_healthy, disk_b_healthy
+    # 写入 A 盘
+    if disk_a_healthy:
+        try:
+            with open(DISK_A, "r+b") as f:
+                f.seek(block_no * BLOCKSIZ)
+                f.write(data)
+        except Exception:
+            disk_a_healthy = False
+            print("[!] 警报：物理磁盘 A 突发写入异常，已被迫降级运行！")
+    # 写入 B 盘
+    if disk_b_healthy:
+        try:
+            with open(DISK_B, "r+b") as f:
+                f.seek(block_no * BLOCKSIZ)
+                f.write(data)
+        except Exception:
+            disk_b_healthy = False
+            print("[!] 警报：物理磁盘 B 突发写入异常，已被迫降级运行！")
 
 def read_block(block_no):
-    """底层物理读：默认从 disk_A 读取"""
-    with open(DISK_A, "rb") as f:
-        f.seek(block_no * BLOCKSIZ)
-        return f.read(BLOCKSIZ)
+    """物理读盘块：实现无缝的热插拔/磁盘损坏自动降级切换"""
+    global disk_a_healthy, disk_b_healthy
+    # 1. 尝试从 A 盘读取
+    if disk_a_healthy:
+        try:
+            with open(DISK_A, "rb") as f:
+                f.seek(block_no * BLOCKSIZ)
+                return f.read(BLOCKSIZ)
+        except Exception:
+            # 💡 A 盘发生物理读取异常，标记其为不健康
+            disk_a_healthy = False
+            print("[!] 警告：物理磁盘 A 故障！系统自动无缝切换到备份磁盘 B ...")
+    # 2. 如果 A 盘坏了，或者 A 盘在前面报错了，自动从 B 盘读取数据
+    if disk_b_healthy:
+        try:
+            with open(DISK_B, "rb") as f:
+                f.seek(block_no * BLOCKSIZ)
+                return f.read(BLOCKSIZ)
+        except Exception:
+            disk_b_healthy = False
+            raise Exception("物理灾难：双盘全部损坏，数据丢失！")
+    raise Exception("物理灾难：无任何可用健康的磁盘介质！")
 
 def save_superblock():
     """【物理保存】：将内存中的超级块状态，持久化写入 A/B 双盘的 Block 1"""
@@ -254,6 +303,27 @@ def load_superblock():
     super_block_memory['ninode'] = unpacked[53]
     super_block_memory['inode'] = list(unpacked[54:104])
     print(f"[+] 磁盘挂载成功！已恢复超级块内存状态 (空闲盘块: {super_block_memory['nfree']}, 空闲i节点: {super_block_memory['ninode']})")
+
+
+def reconstruct_disk_a_from_b():
+    """【RAID-1 物理重构 - 高效流式版】：一次性流式复制，解决句柄开销瓶颈"""
+    global disk_a_healthy, disk_b_healthy
+    
+    if not disk_b_healthy:
+        raise Exception("重构失败：备份磁盘 B 也已损坏，无法进行数据同步！")
+        
+    print("[*] 正在进行 RAID-1 物理数据重构 (Disk B -> Disk A) ...")
+    
+    # 重新激活磁盘 A 的健康标志
+    disk_a_healthy = True
+    
+    # 💡 极速优化：只打开一次文件句柄，利用底层的 read/write 流式瞬间写满 10MB！
+    # "wb" 模式会自动清空磁盘 A（相当于插回了一块全新的空白盘 A）
+    with open(DISK_B, "rb") as f_src, open(DISK_A, "wb") as f_dest:
+        f_dest.write(f_src.read())
+            
+    print("[+] RAID-1 物理重构完毕！磁盘 A 状态已恢复，双盘镜像重归一致。")
+
 
 
 # --- 3. 执行初始化 ---

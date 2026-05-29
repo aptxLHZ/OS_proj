@@ -257,6 +257,18 @@ def open_file(filepath, mode='r'):
         
     mem_inode = iget(ino) # 载入内存活动 i 节点 (引用+1)
     
+    # 💡 核心修复：如果是 "w" (写模式) 打开，执行系统级 Truncate (截断清空)
+    if mode == "w":
+        # 1. 物理大小清零
+        mem_inode.disk_inode.size = 0
+        # 2. 状态机重置：文件恢复为未压缩的普通文件状态 (mode=2)
+        mem_inode.disk_inode.mode = 2 
+        # 3. 物理块指针清空 (原数据占用的物理块可以留着覆盖写，地址保留)
+        # 4. 立刻同步保存 Inode 状态
+        from kernel import write_inode
+        write_inode(ino, mem_inode.disk_inode)
+        print(f"[*] 提示：已对 '{filepath}' 执行系统级 Truncate (大小已清零)。")
+    
     # 在【系统打开文件表】中寻找空槽位
     sys_idx = -1
     for i in range(SYSOPENFILE):
@@ -486,6 +498,12 @@ def hard_delete(parent_path, name):
             if block != 0:
                 bfree(block)
                 
+    # 修复：用橡皮擦彻底抹去磁盘上的 Inode 记录（置 mode=0），断绝诈尸可能！
+    from disk_core import DiskInode
+    from kernel import write_inode
+    empty_inode = DiskInode(mode=0, nlink=0, uid=0, gid=0, size=0, addr=[0]*10)
+    write_inode(target_ino, empty_inode)
+    
     # 3. 回收 i 节点
     ifree(target_ino)
     

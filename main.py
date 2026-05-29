@@ -1,8 +1,11 @@
 # main.py - 模拟操作系统的交互式 Shell
 import os
 import sys
+import time
+import threading
 from disk_core import sync_format_all
-from kernel import format_root_dir, get_current_user, set_current_user
+import disk_core
+from kernel import format_root_dir, fsck, get_current_user, set_current_user
 from api import (
     mkdir, rmdir, chdir, dir_list, create, delete, restore, hard_delete,
     open_file, close_file, write_file, read_file, show_disk_map,
@@ -10,6 +13,39 @@ from api import (
     compress, decompress
 )
 import getpass
+
+
+def inject_crash():
+    """【黑客级物理注入】：精准注入 Inode 身份窃取故障"""
+    global super_block_memory
+    from disk_core import super_block_memory, read_block, write_block, BLOCKSIZ
+    import struct
+    
+    # 💡 1. 精准锁定：获取内存栈顶（下一个即将被分配出去）的空闲 Inode 号！
+    from disk_core import super_block_memory
+    target_ino = super_block_memory['inode'][super_block_memory['ninode'] - 1]
+    
+    # 2. 找到根目录的空槽位
+    parent_block = 34
+    dir_data = bytearray(read_block(parent_block))
+    offset = -1
+    for i in range(0, BLOCKSIZ, 16):
+        ino, _ = struct.unpack('H 14s', dir_data[i:i+16])
+        if ino == 0:
+            offset = i
+            break
+            
+    if offset == -1:
+        raise Exception("注入失败：根目录已满")
+        
+    # 3. 强行在根目录下写入 broken.txt，指向这个即将分配的 target_ino
+    dir_data[offset:offset+16] = struct.pack('H 14s', target_ino, b"broken.txt")
+    write_block(parent_block, dir_data)
+    
+    print(f"[!] 成功物理注入『Inode身份窃取』故障！")
+    print(f"[!] 已在根目录写入 'broken.txt' (指向即将分配的 Inode {target_ino})。")
+    print("[!] 请立即退出系统 ('exit')，关闭 fsck，然后重新进入系统见证灾难！")
+    
 
 def boot_login():
     """开机/注销引导登录屏 (强制身份认证)"""
@@ -28,6 +64,16 @@ def boot_login():
             break # 登录成功，放行进入命令行 Shell
         except Exception as e:
             print(f"[!] {e}\n")
+            
+def daemon_flush_thread():
+    """💡 模拟内核的 pdflush 线程：每 2 秒将内存超级块同步回物理磁盘"""
+    while True:
+        time.sleep(2)
+        if disk_core.superblock_dirty:
+            disk_core.save_superblock()
+            disk_core.superblock_dirty = False
+            # 打印一个隐蔽的调试信息，证明后台在自动刷盘
+            print("\n[后台] 内存超级块已自动同步刷盘...")
 
 def start_shell():
     print("\n" + "="*50)
@@ -188,6 +234,37 @@ def start_shell():
                 if not args: print("用法: decompress [path]"); continue
                 # 默认在当前工作目录进行解压
                 decompress(args[0]) 
+                
+            elif cmd == "break":
+                if not args: print("用法: break [A/B] (模拟砸坏某块物理盘)"); continue
+                target = args[0].upper()
+                if target == "A":
+                    disk_core.disk_a_healthy = False
+                    print("[!] 警告：你故意用铁锤砸坏了物理磁盘 A！磁盘 A 已强制下线。")
+                elif target == "B":
+                    disk_core.disk_b_healthy = False
+                    print("[!] 警告：你故意用铁锤砸坏了物理磁盘 B！磁盘 B 已强制下线。")
+                else:
+                    print("[!] 未知目标，请输入 A 或 B")
+                    
+            elif cmd == "repair":
+                # 💡 调用物理重构
+                try:
+                    disk_core.reconstruct_disk_a_from_b()
+                except Exception as e:
+                    print(f"[!] 修复失败: {e}")
+                    
+            elif cmd == "status":
+                # 查看两块物理磁盘的健康状况
+                status_a = "🟢 健康" if disk_core.disk_a_healthy else "🔴 故障/损坏"
+                status_b = "🟢 健康" if disk_core.disk_b_healthy else "🔴 故障/损坏"
+                print("\n--- 💾 RAID-1 物理磁盘状态报告 ---")
+                print(f"  磁盘 A (data/disk_A.bin): {status_a}")
+                print(f"  磁盘 B (data/disk_B.bin): {status_b}")
+                print("----------------------------------\n")
+                
+            elif cmd == "inject_crash":
+                inject_crash()
                     
             else:
                 print(f"[!] 未知指令: {cmd}。输入 'help' 获取命令帮助。")
@@ -204,6 +281,12 @@ if __name__ == "__main__":
         mkdir("/", ".trash")
     else:
         load_superblock()
+        # 开机自检并修复！
+        fsck() 
+        
+    # 启动 2 秒延迟刷盘守护线程！
+    t = threading.Thread(target=daemon_flush_thread, daemon=True)
+    t.start()
     
     # 1. 引导开机登录
     boot_login()
