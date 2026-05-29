@@ -83,7 +83,7 @@ def balloc():
         # print(f"正在从物理块 {block_no} 加载下一组空闲块...")
         # 实际开发中，这里要调用 read_block(block_no) 并更新 super_block_memory
         pass
-        
+    save_superblock()
     return block_no
 
 def bfree(block_no):
@@ -97,6 +97,7 @@ def bfree(block_no):
         
     super_block_memory['free'][super_block_memory['nfree']] = block_no
     super_block_memory['nfree'] += 1
+    save_superblock()
 
 def format_disk(filename):
     """初始化磁盘：建立成组链接结构"""
@@ -150,6 +151,7 @@ def ialloc():
     # 从栈顶弹出一个 i 节点号
     super_block_memory['ninode'] -= 1
     inode_no = super_block_memory['inode'][super_block_memory['ninode']]
+    save_superblock()
     return inode_no
 
 def ifree(inode_no):
@@ -163,6 +165,7 @@ def ifree(inode_no):
     else:
         # 如果栈满了，可以考虑把它存回磁盘的某个位置 (类似成组链接)
         pass
+    save_superblock()
 
 def init_inode_stack():
     """将前 50 个 i 节点压入超级块的空闲栈"""
@@ -201,6 +204,7 @@ def sync_format_all():
     load_free_list()     
     # 初始化内存中的管理结构
     init_inode_stack()
+    save_superblock()
     print("[+] 所有虚拟磁盘已完成 RAID-1 同步格式化。")
     
     
@@ -217,6 +221,39 @@ def read_block(block_no):
         f.seek(block_no * BLOCKSIZ)
         return f.read(BLOCKSIZ)
 
+def save_superblock():
+    """【物理保存】：将内存中的超级块状态，持久化写入 A/B 双盘的 Block 1"""
+    global super_block_memory
+    # 按照 SUPERBLOCK_FORMAT 打包数据 (前 220 字节)
+    data = struct.pack(
+        SUPERBLOCK_FORMAT,
+        super_block_memory['isize'],
+        super_block_memory['fsize'],
+        super_block_memory['nfree'],
+        *super_block_memory['free'],
+        super_block_memory['ninode'],
+        *super_block_memory['inode'],
+        0, 0, 0, 0, 0 # 锁及时间戳置0
+    )
+    # 填充至 512 字节并写入 Block 1
+    write_block(1, data.ljust(BLOCKSIZ, b'\x00'))
+
+def load_superblock():
+    """【物理挂载】：开机时，从磁盘 Block 1 读取并恢复内存超级块状态"""
+    global super_block_memory
+    # 从磁盘 A 读取 Block 1
+    data = read_block(1)
+    # 解包前 220 字节
+    unpacked = struct.unpack(SUPERBLOCK_FORMAT, data[:220])
+    
+    # 恢复内存状态
+    super_block_memory['isize'] = unpacked[0]
+    super_block_memory['fsize'] = unpacked[1]
+    super_block_memory['nfree'] = unpacked[2]
+    super_block_memory['free'] = list(unpacked[3:53])
+    super_block_memory['ninode'] = unpacked[53]
+    super_block_memory['inode'] = list(unpacked[54:104])
+    print(f"[+] 磁盘挂载成功！已恢复超级块内存状态 (空闲盘块: {super_block_memory['nfree']}, 空闲i节点: {super_block_memory['ninode']})")
 
 
 # --- 3. 执行初始化 ---

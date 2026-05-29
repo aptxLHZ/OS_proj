@@ -14,7 +14,7 @@ class FileDesc:
     def __init__(self, inode_no, f_mode, f_offset=0):
         self.inode_no = inode_no
         self.f_mode = f_mode          # 读写模式: 'r' / 'w'
-        self.f_offset = f_offset      # 💡 极其重要的系统光标指针！
+        self.f_offset = f_offset      # 极其重要的系统光标指针！
         self.mem_inode = None         # 绑定的内存活动 i 节点对象
 
 # 内存 Inode 的 Hash 链表管理 (NHINO = 128)
@@ -24,6 +24,26 @@ hash_table = [[] for _ in range(NHINO)]
 # 对标 PPT 28 页：内核空间初始化系统打开文件表和用户打开文件表
 sys_file_table = [None] * SYSOPENFILE
 user_file_table = [None] * NOFILE
+
+# 1. 增加用户数据库: { 用户名: (UID, GID, 密码) }
+# UID=1 留给 root， usr1~usr3 分配 2~4
+USER_DB = {
+    "root": (1, 100, "root123"),
+    "usr1": (2, 101, "usr123"),
+    "usr2": (3, 101, "usr234"),
+    "usr3": (4, 101, "usr345"),
+}
+
+# 2. 模拟内核中的当前活动用户上下文 (初始默认以 guest 登录)
+_current_user = {"uid": 99, "name": "guest"}  
+
+# 3. 辅助读写接口 (供 api.py 跨模块安全调用)
+def get_current_user():
+    return _current_user["uid"], _current_user["name"]
+
+def set_current_user(uid, name):
+    _current_user["uid"] = uid
+    _current_user["name"] = name
 
 def ihash(inode_no):
     return inode_no % NHINO
@@ -78,7 +98,6 @@ def format_root_dir():
     dotdot = struct.pack('H 14s', 1, b'..')
     root_data = dot + dotdot
     write_block(root_block_no, root_data.ljust(BLOCKSIZ, b'\x00'))
-    
-    root_inode_obj = DiskInode(mode=1, nlink=1, size=32, addr=[root_block_no] + [0]*9)
+    root_inode_obj = DiskInode(mode=1, nlink=1, uid=1, gid=100, size=32, addr=[root_block_no] + [0]*9)
     write_inode(1, root_inode_obj)
     print("[+] 根目录初始化完成，地址已回填至 Inode 1。")
