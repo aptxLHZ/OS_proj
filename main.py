@@ -10,7 +10,7 @@ from api import (
     mkdir, rmdir, chdir, dir_list, create, delete, restore, hard_delete,
     open_file, close_file, write_file, read_file, show_disk_map,
     current_working_dir_inode, login, logout, rename,
-    compress, decompress
+    compress, decompress, ln, symlink
 )
 import getpass
 import eel
@@ -112,15 +112,17 @@ def start_shell():
                 print("  ls -l / dir -l         : 查看详细属性(权限、属主、大小、物理块号)")
                 print("  cd [path]              : 切换当前目录 (支持绝对/相对路径)")
                 print("  mkdir [name]           : 在当前工作目录下创建子目录")
-                print("  rmdir [name]           : 软删除当前工作目录下的子目录 (移入回收站)")
+                print("  rmdir [name]           : 软删除子目录 (移入回收站)")
                 print("  create [name]          : 在当前工作目录下创建普通文件")
                 print("  open [path] [r/w]      : 打开指定文件并分配 fd (文件描述符)")
                 print("  write [fd] [content]   : 往描述符 fd 写入文本 (光标自动累计追加)")
-                print("  read [fd]              : 读出描述符 fd 当前光标后的所有文本数据")
-                print("  close [fd]             : 关闭指定描述符 fd 并安全写回磁盘")
-                print("  delete [name]          : 软删除当前工作目录下的普通文件 (移入回收站)")
-                print("  restore [name]         : 自动从回收站将文件/目录恢复至其原绝对路径")
-                print("  hard_delete [name]     : 彻底物理删除当前目录/回收站下的文件或目录")
+                print("  read [fd]              : 从描述符 fd 当前光标位置读出数据")
+                print("  close [fd]             : 关闭指定文件描述符 fd")
+                print("  delete [name]          : 软删除普通文件 (移入回收站)")
+                print("  restore [name]         : 💡 自动从回收站将文件/目录恢复至其原路径")
+                print("  hard_delete [name]     : 💡 彻底物理删除：递减链接计数，归零时才物理释放")
+                print("  ln [src] [link]        : 创建硬链接：使新名字指向同一个物理 Inode 号")
+                print("  ln -s [src] [link]     : 创建符号链接(软链接)：保存指向源文件的路径")
                 print("  rename [old] [new]     : 将当前目录下的文件/目录重命名(防重名)")
                 print("  map                    : 查看物理盘块状态图谱 (支持参数 map [start] [len])")
                 print("  format                 : (限管理员) 物理重新初始化并清空磁盘")
@@ -265,6 +267,15 @@ def start_shell():
                 
             elif cmd == "inject_crash":
                 inject_crash()
+                
+            elif cmd == "ln":
+                # 支持软硬链接
+                if len(args) < 2: print("用法: ln [源路径] [新链接名] 或 ln -s [源路径] [新链接名]"); continue
+                if args[0] == "-s":
+                    if len(args) < 3: print("用法: ln -s [源路径] [新链接名]"); continue
+                    symlink(args[1], args[2])
+                else:
+                    ln(args[0], args[1])
                     
             else:
                 print(f"[!] 未知指令: {cmd}。输入 'help' 获取命令帮助。")
@@ -302,11 +313,11 @@ if __name__ == "__main__":
     t = threading.Thread(target=daemon_flush_thread, daemon=True)
     t.start()
     
-    # ##命令行
-    # # 1. 引导开机登录
-    # boot_login()
-    # # 2. 验证通过，进入命令行Shell
-    # start_shell()
+    ##命令行
+    # 1. 引导开机登录
+    boot_login()
+    # 2. 验证通过，进入命令行Shell
+    start_shell()
     
-    #可视化
-    start_gui()
+    # #可视化
+    # start_gui()

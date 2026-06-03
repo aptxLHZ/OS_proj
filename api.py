@@ -6,10 +6,8 @@ from kernel import get_inode, write_inode, iget, iput, sys_file_table, user_file
 current_working_dir_inode = 1  # 初始为根目录
 
 def namei(path):
-    """动态路径解析：支持绝对路径(/开头)和相对路径"""
+    """动态路径解析：支持绝对路径、相对路径和符号链接(Symlink)自动跳转"""
     global current_working_dir_inode
-    
-    # 1. 自动判定起点：绝对路径从 1# 开始，相对路径从当前工作目录开始
     if path.startswith("/"):
         current_inode_no = 1
     else:
@@ -19,18 +17,24 @@ def namei(path):
     
     for part in parts:
         if part == ".":
-            continue # 保持当前目录不变
+            continue
             
         inode_info = get_inode(current_inode_no)
-        # 校验：只有目录能进行路径向下遍历
+        
+        # 💡 核心设计：如果路径中间遇到了符号链接 (mode == 4)，自动读取目标路径进行重定向！
+        if inode_info[0] == 4:
+            sym_block = inode_info[5]
+            sym_path = read_block(sym_block)[:inode_info[4]].decode('utf-8')
+            current_inode_no = namei(sym_path) # 递归解析
+            inode_info = get_inode(current_inode_no)
+            
         if inode_info[0] != 1:
-            raise Exception(f"路径错误：'{part}' 不是目录，无法遍历")
+            raise Exception(f"路径错误：'{part}' 无法作为目录遍历")
             
         first_block = inode_info[5]
         dir_data = read_block(first_block)
         
         found = False
-        # 利用目录里天然存在的 "." 和 ".." 目录项进行寻址跳转！
         for i in range(0, BLOCKSIZ, 16):
             entry = dir_data[i:i+16]
             ino, name = struct.unpack('H 14s', entry)
@@ -42,6 +46,13 @@ def namei(path):
         if not found:
             raise Exception(f"路径不存在: {part}")
             
+    # 💡 路径解析到终点，如果最终落脚点还是个符号链接，我们也自动还原至其指向的原文件！
+    final_info = get_inode(current_inode_no)
+    if final_info[0] == 4:
+        sym_block = final_info[5]
+        sym_path = read_block(sym_block)[:final_info[4]].decode('utf-8')
+        return namei(sym_path)
+        
     return current_inode_no
 
 def iname(dir_inode_no, new_name):
@@ -197,8 +208,10 @@ def dir_list(detail=False):
             size = item_info[4]
             
             if detail:
-                perm_str = "d" if mode == 1 else "-"
-                perm_str += "rwxr-xr-x" if mode == 1 else "rw-r--r--"
+                # 💡 符号链接的权限首字母为 "l"，普通文件为 "-"，目录为 "d"
+                if mode == 1: perm_str = "d" + "rwxr-xr-x"
+                elif mode == 4: perm_str = "l" + "rwxrwxrwx" # 软链接默认为满权限
+                else: perm_str = "-" + "rw-r--r--"
                 
                 # 完善的属主用户名映射逻辑，彻底消灭 usr-1 和 usr98 
                 owner_uid = item_info[2]
@@ -460,9 +473,15 @@ def restore(filename):
     print(f"[+] '{filename}' 已【自动还原】至其原始目录: {target_path}")
 
 def hard_delete(parent_path, name):
-    """【彻底物理删除】：回收所有的物理块和 Inode 号 (全面支持普通文件和目录)"""
+    """
+    【物理彻底删除】：
+    不再暴力抹除，而是执行标准 UNIX 的 unlink 逻辑：
+    1. 递减链接计数 (nlink)。
+    2. 只有当 nlink 减为 0 时，才物理释放盘块和 Inode [50]！
+    3. 如果 nlink > 1，只减少计数并擦除当前目录项，不破坏实际文件资源。
+    """
     if name in ['.', '..', '.trash', '.trashinfo']:
-        raise Exception("系统保护项，禁止物理彻底删除！")
+        raise Exception("系统保护项，安全起见禁止物理彻底删除！")
         
     parent_ino = namei(parent_path)
     parent_inode_info = get_inode(parent_ino)
@@ -481,45 +500,55 @@ def hard_delete(parent_path, name):
             break
             
     if target_ino == 0:
-        raise Exception(f"找不到项: {name}")
+        raise Exception(f"找不到要物理删除的项: {name}")
         
-    target_inode_info = get_inode(target_ino)
+    target_inode_info = list(get_inode(target_ino))
     mode = target_inode_info[0]
     
-    # 2. 回收物理块
-    from disk_core import bfree, ifree
-    if mode == 1: # 目录
-        # 回收目录占用的那个数据块
-        target_block = target_inode_info[5]
-        bfree(target_block)
-    elif mode == 2: # 文件
-        # 遍历回收普通文件占用的所有数据块
-        for block in target_inode_info[5:15]:
-            if block != 0:
-                bfree(block)
-                
-    # 修复：用橡皮擦彻底抹去磁盘上的 Inode 记录（置 mode=0），断绝诈尸可能！
-    from disk_core import DiskInode
-    from kernel import write_inode
-    empty_inode = DiskInode(mode=0, nlink=0, uid=0, gid=0, size=0, addr=[0]*10)
-    write_inode(target_ino, empty_inode)
+    # 2. 权限校验
+    current_uid, _ = get_current_user()
+    file_owner_uid = target_inode_info[2]
+    if current_uid != 1 and current_uid != file_owner_uid:
+        raise Exception("权限拒绝：您无权彻底删除该文件/目录！")
+        
+    # 3. 💡 物理释放决策：递减引用数
+    target_inode_info[1] -= 1
     
-    # 3. 回收 i 节点
-    ifree(target_ino)
-    
-    # 4. 从父目录中擦除项
-    # 属主越权校验：如果是在回收站内进行彻底物理删除，必须进行属主校验
-    trash_ino = namei("/.trash")
-    if parent_ino == trash_ino:
-        current_uid, _ = get_current_user()
-        file_owner_uid = target_inode_info[2]
-        if current_uid != 1 and current_uid != file_owner_uid:
-            raise Exception("权限拒绝：您不是该文件的创建者，无权在回收站中彻底物理删除此文件！")
+    if target_inode_info[1] == 0:
+        # 引用计数归零：真正释放物理资源并物理清空 Inode
+        from disk_core import bfree, ifree
+        if mode == 1: # 目录
+            target_block = target_inode_info[5]
+            bfree(target_block)
+        elif mode == 4: # 软链接
+            bfree(target_inode_info[5])
+        else: # 普通文件
+            for block in target_inode_info[5:15]:
+                if block != 0:
+                    bfree(block)
+                    
+        from disk_core import DiskInode
+        empty_inode = DiskInode(mode=0, nlink=0, uid=0, gid=0, size=0, addr=[0]*10)
+        write_inode(target_ino, empty_inode)
+        ifree(target_ino)
+        print(f"[-] 引用归零：'{name}' 的物理磁盘空间和 Inode {target_ino} 已被彻底回收释放。")
+    else:
+        # 引用不为 0：仅写回更新后的引用计数，物理盘块和 Inode 依然完整
+        from disk_core import DiskInode
+        updated_inode = DiskInode(
+            mode=target_inode_info[0], nlink=target_inode_info[1], 
+            uid=target_inode_info[2], gid=target_inode_info[3], 
+            size=target_inode_info[4], addr=target_inode_info[5:15]
+        )
+        write_inode(target_ino, updated_inode)
+        print(f"[-] '{name}' 目录关系已切断，由于还被其他链接引用，物理 Inode {target_ino} 依然完好留存 (当前引用: {target_inode_info[1]})")
+        
+    # 4. 从父目录中擦除名字
     dir_data[target_offset:target_offset+16] = struct.pack('H 14s', 0, b'\x00'*14)
     from disk_core import write_block
     write_block(parent_block, dir_data)
     
-    # 5. 【元数据同步】：若该文件是从回收站 (/.trash) 彻底物理删除的，自动清除 /.trashinfo 里的历史恢复路径
+    # 5. 元数据同步（清除 /.trashinfo 里的历史恢复路径）
     trash_ino = namei("/.trash")
     if parent_ino == trash_ino:
         try:
@@ -528,7 +557,6 @@ def hard_delete(parent_path, name):
             close_file(fd_info)
             
             lines = metadata.strip().split('\n')
-            # 过滤掉关于这个被彻底删除的文件的历史记录
             remaining_lines = [line for line in lines if line and not line.startswith(f"{name}:")]
             
             fd_info = open_file("/.trashinfo", "w")
@@ -537,9 +565,6 @@ def hard_delete(parent_path, name):
             close_file(fd_info)
         except Exception:
             pass
-            
-    type_desc = "目录" if mode == 1 else "文件"
-    print(f"[-] {type_desc} '{name}' 已物理清空并彻底删除")
    
 def show_disk_map(start_block=0, count=100):
     """磁盘物理块可视化监控：支持自定义起始块和查看数量"""
@@ -740,3 +765,72 @@ def decompress(filepath):
     write_inode(ino, original_inode)
     
     print(f"[+] '{filepath}' 已成功解压还原！恢复大小: {len(decompressed_data)}B。")
+    
+def ln(src_path, dest_name):
+    """【系统调用】：创建硬链接 (💡 完美修复：使用 iget 载入活动内存链，解决缓存不一致)"""
+    src_ino = namei(src_path)
+    
+    # 💡 核心修复：不直接读盘，而是用 iget 载入内存活动 i 节点。
+    # 如果该文件已被其他人打开，iget 会直接返回内存中的同一个活动副本！
+    from kernel import iget, iput
+    mem_inode = iget(src_ino)
+    src_inode_info = mem_inode.disk_inode # 获取内存中正在使用的 Inode 数据
+    
+    if src_inode_info.mode == 1:
+        iput(mem_inode) # 发生异常前，务必安全递减并释放内存 i 节点引用！
+        raise Exception("操作失败：目录无法创建硬链接")
+        
+    global current_working_dir_inode
+    offset = iname(current_working_dir_inode, dest_name)
+    
+    # 写入当前目录的数据块
+    parent_inode_info = get_inode(current_working_dir_inode)
+    parent_block = parent_inode_info[5]
+    dir_data = bytearray(read_block(parent_block))
+    dir_data[offset:offset+16] = struct.pack('H 14s', src_ino, dest_name.encode('utf-8'))
+    write_block(parent_block, dir_data)
+    
+    # 💡 直接递增内存中活跃 Inode 副本的链接数！
+    src_inode_info.nlink += 1
+    
+    # 💡 调用 iput 释放引用。
+    # 如果当前没有别人打开它，iput 会立刻将其安全的刷回磁盘。
+    # 如果当前有人正在打开它（如你的 write 未关闭），iput 仅将引用降回 1，保留主存活跃副本，直到close时才写回！
+    iput(mem_inode)
+    
+    print(f"[+] 成功为 '{src_path}' 创建硬链接 '{dest_name}'，当前引用数: {src_inode_info.nlink}")    
+
+def symlink(src_path, dest_name):
+    """【系统调用】：创建符号链接 (软链接，一个存有路径文本的独立文件)"""
+    try:
+        namei(src_path) # 检测源路径是否合理
+    except Exception:
+        print(f"[*] 提示：软链接指向的源路径 '{src_path}' 当前在系统内不存在 (悬空软链接)。")
+        
+    global current_working_dir_inode
+    offset = iname(current_working_dir_inode, dest_name)
+    
+    # 分配新 Inode 和物理数据块
+    new_ino = ialloc()
+    new_block = balloc()
+    
+    # 将源路径写入新数据块中
+    path_bytes = src_path.encode('utf-8')
+    if len(path_bytes) > BLOCKSIZ:
+        raise Exception("操作失败：目标路径名字过长")
+    write_block(new_block, path_bytes.ljust(BLOCKSIZ, b'\x00'))
+    
+    # 创建 Inode: mode=4(符号链接), size=路径长度, 首块地址 di_addr[0]=new_block
+    from disk_core import DiskInode
+    current_uid, _ = get_current_user()
+    new_inode_obj = DiskInode(mode=4, nlink=1, uid=current_uid, gid=100, size=len(path_bytes), addr=[new_block] + [0]*9)
+    write_inode(new_ino, new_inode_obj)
+    
+    # 将新链接写回父目录项
+    parent_inode_info = get_inode(current_working_dir_inode)
+    parent_block = parent_inode_info[5]
+    dir_data = bytearray(read_block(parent_block))
+    dir_data[offset:offset+16] = struct.pack('H 14s', new_ino, dest_name.encode('utf-8'))
+    write_block(parent_block, dir_data)
+    
+    print(f"[+] 成功创建软链接 '{dest_name}' -> '{src_path}'")
