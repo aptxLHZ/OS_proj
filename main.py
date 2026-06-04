@@ -468,6 +468,30 @@ def gui_autocomplete(user_input):
         
     return user_input
 
+@eel.expose
+def gui_read_file(filename):
+    """供前端 GUI 调用的纯文本读取"""
+    try:
+        from api import open_file, read_file, close_file
+        fd = open_file(filename, "r")
+        text = read_file(fd)
+        close_file(fd)
+        return {"success": True, "content": text}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@eel.expose
+def gui_write_file(filename, content):
+    """供前端 GUI 调用的纯文本写入"""
+    try:
+        from api import open_file, write_file, close_file
+        fd = open_file(filename, "w")
+        write_file(fd, content)
+        close_file(fd)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 if __name__ == "__main__":
     # 如果 data/ 目录下文件坏了或者没有，自动执行初始化
     from disk_core import DISK_A, DISK_B, load_superblock, save_superblock

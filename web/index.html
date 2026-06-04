@@ -78,6 +78,31 @@
             </div>
         </div>
 
+        <!-- 📝 记事本应用窗口 -->
+        <div class="window" id="win-editor" style="display: none; width: 500px; height: 400px; z-index: 150;">
+            <div class="window-header">
+                <span class="window-title" id="editor-title">📝 记事本 - 未命名</span>
+                <div class="window-controls">
+                    <span class="win-btn win-close" id="close-editor">×</span>
+                </div>
+            </div>
+            <div class="window-body" style="padding: 0; display: flex; flex-direction: column;">
+                <textarea id="editor-textarea" style="flex: 1; background: #1e1e1e; color: #fff; border: none; padding: 15px; font-size: 14px; outline: none; resize: none;"></textarea>
+                <button id="btn-editor-save" style="padding: 10px; background: #4CAF50; color: white; border: none; cursor: pointer; font-weight: bold;">💾 保存文件</button>
+            </div>
+        </div>
+
+        <!-- 🖱️ 漂亮的右键菜单 -->
+        <div id="context-menu" style="display: none; position: absolute; background: rgba(30, 30, 45, 0.95); border: 1px solid #bd93f9; border-radius: 8px; padding: 5px 0; min-width: 150px; z-index: 9999; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
+            <div class="menu-item" id="menu-open">📖 打开 / 编辑</div>
+            <div class="menu-item" id="menu-rename">✏️ 重命名</div>
+            <div class="menu-item" id="menu-compress">🗜️ 压缩 / 解压</div>
+            <div class="menu-item" id="menu-delete">🗑️ 移入回收站</div>
+            <div class="menu-item" id="menu-restore" style="display: none;">↩️ 还原文件</div>
+            <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 5px 0;">
+            <div class="menu-item" id="menu-info">ℹ️ 属性详情</div>
+        </div>
+
     </div>
 
     <!-- 💡 3. 底部任务栏 (默认隐藏) -->

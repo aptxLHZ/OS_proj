@@ -116,6 +116,23 @@ async function loadFiles() {
                 alert(`这是普通文件 '${file.name}'，Inode号: ${file.ino}，大小: ${file.size}B。\n在下一个任务里，双击将直接弹出文本编辑器！`);
             }
         });
+
+        // 右键菜单呼出
+        item.addEventListener("contextmenu", function(e) {
+            e.preventDefault();
+            currentSelectedFile = file.name;
+            currentFileType = file.type;
+            
+            // 如果在回收站内，显示“还原”，隐藏“压缩/重命名”
+            let isTrash = document.getElementById("address-bar").innerText.includes(".trash");
+            document.getElementById("menu-restore").style.display = isTrash ? "block" : "none";
+            document.getElementById("menu-compress").style.display = isTrash ? "none" : "block";
+            document.getElementById("menu-rename").style.display = isTrash ? "none" : "block";
+
+            contextMenu.style.top = e.clientY + "px";
+            contextMenu.style.left = e.clientX + "px";
+            contextMenu.style.display = "block";
+        });
         
         fileGrid.appendChild(item);
     });
@@ -310,4 +327,98 @@ function makeDraggable(win) {
 // 自动使桌面上所有的窗口都支持拖拽
 document.querySelectorAll(".window").forEach(makeDraggable);
 
+// --- 🖱️ 右键菜单与记事本引擎 ---
+let currentSelectedFile = null;
+let currentFileType = null;
 
+const contextMenu = document.getElementById("context-menu");
+
+// 隐藏右键菜单 (全局点击隐藏)
+document.addEventListener("click", () => contextMenu.style.display = "none");
+
+// 绑定记事本关闭和拖拽
+document.getElementById("close-editor").addEventListener("click", () => document.getElementById("win-editor").style.display = "none");
+makeDraggable(document.getElementById("win-editor")); // 激活拖拽
+
+
+// --- 右键菜单功能绑定 ---
+
+// 1. 属性查询 (调用后端的 ls -l 过滤)
+document.getElementById("menu-info").addEventListener("click", async function() {
+    // 复用你的 execute_cmd，极其优雅！
+    let stdout = await eel.execute_cmd("ls -l")();
+    alert(`【属性概览】\n\n${stdout}`); // 这里简化处理，弹出终端列表供查阅
+});
+
+// 2. 删除文件/目录
+document.getElementById("menu-delete").addEventListener("click", async function() {
+    if(confirm(`确定要把 '${currentSelectedFile}' 移入回收站吗？`)) {
+        let cmd = currentFileType === "dir" ? "rmdir" : "delete";
+        await eel.execute_cmd(`${cmd} ${currentSelectedFile}`)();
+        loadFiles();
+    }
+});
+
+// 3. 压缩 / 解压
+document.getElementById("menu-compress").addEventListener("click", async function() {
+    if(currentFileType === "dir") return alert("暂不支持直接压缩目录！");
+    let action = confirm("点击[确定]进行压缩，点击[取消]尝试解压");
+    let cmd = action ? "compress" : "decompress";
+    let res = await eel.execute_cmd(`${cmd} ${currentSelectedFile}`)();
+    alert(res);
+    loadFiles();
+});
+
+// 4. 重命名
+document.getElementById("menu-rename").addEventListener("click", async function() {
+    let newName = prompt(`将 '${currentSelectedFile}' 重命名为:`);
+    if(newName) {
+        let res = await eel.execute_cmd(`rename ${currentSelectedFile} ${newName}`)();
+        alert(res);
+        loadFiles();
+    }
+});
+
+// 5. 还原 (仅在回收站有效)
+document.getElementById("menu-restore").addEventListener("click", async function() {
+    let res = await eel.execute_cmd(`restore ${currentSelectedFile}`)();
+    alert(res);
+    loadFiles();
+});
+
+// 6. 打开 / 编辑 (文本编辑器)
+document.getElementById("menu-open").addEventListener("click", async function() {
+    if(currentFileType === "dir") {
+        // 是目录直接进入
+        await eel.gui_chdir(currentSelectedFile)();
+        loadFiles();
+        updateAddressBar(currentSelectedFile, "DIR");
+    } else {
+        // 是文件，调用 Python 纯文本接口，拉起记事本
+        let result = await eel.gui_read_file(currentSelectedFile)();
+        if(result.success) {
+            document.getElementById("editor-title").innerText = `📝 编辑 - ${currentSelectedFile}`;
+            document.getElementById("editor-textarea").value = result.content;
+            document.getElementById("win-editor").style.display = "flex";
+            // 居中显示并置顶
+            let win = document.getElementById("win-editor");
+            win.style.top = "10%"; win.style.left = "20%";
+            win.style.zIndex = ++maxZIndex;
+        } else {
+            alert("读取失败: " + result.error);
+        }
+    }
+});
+
+// 记事本保存按钮
+document.getElementById("btn-editor-save").addEventListener("click", async function() {
+    let content = document.getElementById("editor-textarea").value;
+    let filename = document.getElementById("editor-title").innerText.replace("📝 编辑 - ", "");
+    let result = await eel.gui_write_file(filename, content)();
+    if(result.success) {
+        alert("💾 文件保存成功！");
+        loadFiles();
+    } else {
+        alert("保存失败: " + result.error);
+    }
+});

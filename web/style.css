@@ -254,3 +254,16 @@ body {
     font-family: Consolas, "Courier New", Courier, monospace;
     font-size: 14px;
 }
+
+/* 右键菜单项效果 */
+.menu-item {
+    padding: 8px 15px;
+    font-size: 13px;
+    color: #f8f8f2;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.menu-item:hover {
+    background: #bd93f9;
+    color: #fff;
+}
