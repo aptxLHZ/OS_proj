@@ -8,20 +8,84 @@
     <script type="text/javascript" src="/eel.js"></script> 
 </head>
 <body>
-    <!-- 桌面区域 -->
-    <div id="desktop">
-        <!-- 屏幕正中间的内核状态回显 -->
-        <div id="kernel-status">
-            <h1>myOS 内核已就绪</h1>
-            <p id="status-text">正在等待与 Python 内核建立通信...</p>
+    <!-- 💡 1. 锁屏登录遮罩层 -->
+    <div id="login-screen">
+        <div class="login-card">
+            <h2>myOS 登录安全认证</h2>
+            <p style="color: #aaa; font-size: 13px; margin-bottom: 20px;">系统处于物理隔离锁死状态，请认证</p>
+            <div class="input-group">
+                <input type="text" id="username" placeholder="用户名 (root/usr1)" required>
+            </div>
+            <div class="input-group">
+                <input type="password" id="password" placeholder="密码" required>
+            </div>
+            <button id="btn-login-submit">登录系统</button>
+            <p id="login-error" style="color: #ff4a4a; font-size: 13px; margin-top: 15px; display: none;"></p>
         </div>
     </div>
 
-    <!-- 底部任务栏 (Dock) -->
-    <div id="taskbar">
+    <!-- 💡 2. 桌面区域 (默认隐藏，登录成功后显示) -->
+    <div id="desktop" style="display: none;">
+        <!-- 屏幕正中间的内核状态回显 -->
+        <div id="kernel-status">
+            <h1 id="welcome-title">myOS 内核已就绪</h1>
+            <p id="status-text">正在从内核同步超级块数据...</p>
+        </div>
+
+        <!-- 📂 资源管理器窗口 (浮动窗口结构) -->
+        <div class="window" id="win-file-manager" style="display: none;">
+            <div class="window-header">
+                <span class="window-title">📂 资源管理器</span>
+                <div class="window-controls">
+                    <span class="win-btn win-close" id="close-file-manager">×</span>
+                </div>
+            </div>
+            <!-- 工具栏：包含返回上一级按钮、地址栏和新建文件夹按钮 -->
+            <div class="window-toolbar">
+                <button id="btn-go-back">⬅️ 返回</button>
+                <div id="address-bar">当前位置: Inode 1</div>
+                <button id="btn-gui-mkdir" style="background: #4CAF50; color: white;">➕ 新建文件夹</button>
+            </div>
+            <div class="window-body">
+                <!-- 图标展示网格 -->
+                <div class="file-grid" id="file-grid">
+                    <!-- 这里的数据将由 app.js 动态渲染 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 💻 系统终端窗口 (浮动窗口结构) -->
+        <div class="window" id="win-terminal" style="display: none;">
+            <div class="window-header" style="background: rgba(10, 10, 15, 0.9);">
+                <span class="window-title">💻 系统终端</span>
+                <div class="window-controls">
+                    <span class="win-btn win-close" id="close-terminal">×</span>
+                </div>
+            </div>
+            <!-- 终端主体，完全模拟物理控制台 -->
+            <div class="window-body terminal-body">
+                <div id="terminal-output">
+                    <!-- 这里展示历史输出内容 -->
+                    <div>myOS Terminal [版本 1.0.0]</div>
+                    <div>(c) myOS Corporation。保留所有权利。</div>
+                    <br>
+                </div>
+                <!-- 交互输入行 -->
+                <div class="terminal-input-line">
+                    <span id="terminal-prompt">guest@myOS:[Inode 1]$&nbsp;</span>
+                    <input type="text" id="terminal-input" autofocus autocomplete="off">
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- 💡 3. 底部任务栏 (默认隐藏) -->
+    <div id="taskbar" style="display: none;">
         <div class="app-icon" id="btn-file-manager">📂 资源管理器</div>
         <div class="app-icon" id="btn-terminal">💻 系统终端</div>
         <div class="app-icon" id="btn-disk-map">📊 物理图谱</div>
+        <div class="app-icon" id="btn-logout" style="background: rgba(255, 74, 74, 0.2)">🔴 注销</div>
     </div>
 
     <script src="app.js"></script>
