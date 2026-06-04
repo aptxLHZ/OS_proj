@@ -50,27 +50,26 @@ class DiskInode:
     def serialize(self):
         return struct.pack(INODE_FORMAT, self.mode, self.nlink, self.uid, self.gid, self.size, *self.addr)
 
-def init_virtual_disk(filename, num_blocks=20480):
-    """初始化 10MB 的虚拟磁盘文件 (10MB / 512B = 20480 个块)"""
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
-    if os.path.exists(filename):
-        print(f"[*] 磁盘文件 {filename} 已存在，跳过初始化。")
+
+def init_virtual_disk(filename, num_blocks=20480, force=False):
+    """
+    初始化虚拟磁盘文件
+    force=True 时，无论文件是否存在，都会执行物理清零（填入 10MB 的 0x00）
+    """
+    if os.path.exists(filename) and not force:
+        print(f"[*] 磁盘文件 {filename} 已存在，跳过物理清零。")
         return
     
-    print(f"[*] 正在初始化磁盘文件 {filename}...")
-    # 创建 num_blocks * 512 字节的空文件
+    print(f"[*] 正在执行物理清零：{filename} ...")
+    # 'wb' 模式打开会直接清空原有文件内容，重新写入全 0
     with open(filename, 'wb') as f:
         f.write(b'\x00' * (num_blocks * BLOCKSIZ))
     
-    # 初始化超级块数据 (简单示例，置 0)
-    # 在任务 1.2 中，我们将填入成组链接法的初始数据
+    # 写入初始的空超级块（防止挂载报错）
     superblock_data = struct.pack(SUPERBLOCK_FORMAT, 32, num_blocks, 0, *([0]*50), 0, *([0]*50), 0, 0, 0, 0, 0)
-    
     with open(filename, 'r+b') as f:
-        f.seek(BLOCKSIZ) # 跳过引导块，从 Block 1 开始写
+        f.seek(BLOCKSIZ) 
         f.write(superblock_data)
-    print(f"[+] {filename} 初始化完成。")
 
 def balloc():
     """分配一个物理盘块"""
@@ -215,7 +214,7 @@ def sync_format_all():
     """同时初始化并格式化所有盘，确保 RAID-1 状态一致"""
     disks = [DISK_A, DISK_B]
     for disk in disks:
-        init_virtual_disk(disk)
+        init_virtual_disk(disk, force=True) # 强制初始化，覆盖原有数据
         format_disk(disk)
     load_free_list()     
     # 初始化内存中的管理结构

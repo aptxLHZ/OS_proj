@@ -267,3 +267,26 @@ body {
     background: #bd93f9;
     color: #fff;
 }
+
+.admin-btn { padding: 12px; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s;}
+.admin-btn:hover { filter: brightness(1.2); }
+
+.disk-block {
+    width: 100%; aspect-ratio: 1/1; 
+    border-radius: 2px;
+    background: #333; /* 默认空闲灰 */
+    border: 1px solid rgba(0,0,0,0.5);
+    cursor: crosshair;
+}
+.block-boot { background: #E91E63; }
+.block-super { background: #FF9800; }
+.block-inode { background: #03A9F4; }
+.block-data { background: #4CAF50; box-shadow: 0 0 5px #4CAF50; }
+.disk-block:hover { transform: scale(1.5); z-index: 10; box-shadow: 0 0 10px white; }
+
+.window-controls {
+    display: flex;         /* 开启弹性布局 */
+    flex-direction: row;   /* 强制横向排列 */
+    align-items: center;   /* 垂直居中 */
+    gap: 5px;              /* 两个按钮之间的间距 */
+}

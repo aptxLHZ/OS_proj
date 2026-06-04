@@ -1,5 +1,7 @@
 // web/app.js - 处理前端交互
 
+let currentLoggedUser = "guest"; // 记录当前登录用户
+
 // 绑定登录按钮点击事件
 document.getElementById("btn-login-submit").addEventListener("click", performLogin);
 
@@ -14,7 +16,7 @@ async function performLogin() {
     let user = document.getElementById("username").value.trim();
     let pass = document.getElementById("password").value;
     let errorElem = document.getElementById("login-error");
-    
+        
     if (!user || !pass) {
         errorElem.innerText = "用户名或密码不能为空！";
         errorElem.style.display = "block";
@@ -24,8 +26,12 @@ async function performLogin() {
     // 💡 核心跨界调用：调用 Python 中的 gui_login 接口
     let result = await eel.gui_login(user, pass)();
     
+    let isRoot = await eel.gui_is_root()();
+    document.getElementById("btn-admin-tools").style.display = isRoot ? "flex" : "none";
+
     if (result.success) {
         // 登录成功，隐藏登录屏幕，显示桌面与任务栏
+        currentLoggedUser = result.username; // 更新当前登录用户
         document.getElementById("login-screen").style.display = "none";
         document.getElementById("desktop").style.display = "flex";
         document.getElementById("taskbar").style.display = "flex";
@@ -78,6 +84,7 @@ document.getElementById("close-file-manager").addEventListener("click", function
 
 // 3. 核心：从 Python 内核拉取文件列表并渲染
 async function loadFiles() {
+    updateKernelInfo(currentLoggedUser);
     let fileGrid = document.getElementById("file-grid");
     fileGrid.innerHTML = "正在读取内核数据...";
     
@@ -113,7 +120,9 @@ async function loadFiles() {
                     updateAddressBar(file.name, file.ino);
                 }
             } else {
-                alert(`这是普通文件 '${file.name}'，Inode号: ${file.ino}，大小: ${file.size}B。\n在下一个任务里，双击将直接弹出文本编辑器！`);
+                currentSelectedFile = file.name;
+                currentFileType = file.type;
+                document.getElementById("menu-open").click();
             }
         });
 
@@ -123,11 +132,15 @@ async function loadFiles() {
             currentSelectedFile = file.name;
             currentFileType = file.type;
             
-            // 如果在回收站内，显示“还原”，隐藏“压缩/重命名”
             let isTrash = document.getElementById("address-bar").innerText.includes(".trash");
+            // 💡 修复：如果在垃圾桶，隐藏移入回收站，显示还原和彻底删除
             document.getElementById("menu-restore").style.display = isTrash ? "block" : "none";
+            document.getElementById("menu-hard-delete").style.display = isTrash ? "block" : "none";
+            document.getElementById("menu-delete").style.display = isTrash ? "none" : "block";
+            
             document.getElementById("menu-compress").style.display = isTrash ? "none" : "block";
             document.getElementById("menu-rename").style.display = isTrash ? "none" : "block";
+            document.getElementById("menu-link").style.display = isTrash ? "none" : "block";
 
             contextMenu.style.top = e.clientY + "px";
             contextMenu.style.left = e.clientX + "px";
@@ -136,6 +149,10 @@ async function loadFiles() {
         
         fileGrid.appendChild(item);
     });
+    if (document.getElementById("win-disk-map").style.display !== "none") {
+        // 如果物理图谱窗口开着，自动调用刷新
+        document.getElementById("btn-disk-map").click(); 
+    }
 }
 
 // 4. 返回上一级目录按钮
@@ -345,9 +362,9 @@ makeDraggable(document.getElementById("win-editor")); // 激活拖拽
 
 // 1. 属性查询 (调用后端的 ls -l 过滤)
 document.getElementById("menu-info").addEventListener("click", async function() {
-    // 复用你的 execute_cmd，极其优雅！
-    let stdout = await eel.execute_cmd("ls -l")();
-    alert(`【属性概览】\n\n${stdout}`); // 这里简化处理，弹出终端列表供查阅
+    let result = await eel.gui_get_file_info(currentSelectedFile)();
+    if (result.success) alert(`【属性详情】\n\n${result.info}`);
+    else alert("查询失败: " + result.error);
 });
 
 // 2. 删除文件/目录
@@ -388,11 +405,21 @@ document.getElementById("menu-restore").addEventListener("click", async function
 
 // 6. 打开 / 编辑 (文本编辑器)
 document.getElementById("menu-open").addEventListener("click", async function() {
-    if(currentFileType === "dir") {
-        // 是目录直接进入
-        await eel.gui_chdir(currentSelectedFile)();
-        loadFiles();
-        updateAddressBar(currentSelectedFile, "DIR");
+    if(currentFileType === "dir" || currentFileType === "link") {
+        let result = await eel.gui_chdir(currentSelectedFile)();
+        if(result.success) {
+            loadFiles();
+            updateAddressBar(currentSelectedFile, "DIR/LINK");
+        } else {
+            // 如果 chdir 失败，说明软链接指向的可能是普通文件，拉起记事本！
+            let res2 = await eel.gui_read_file(currentSelectedFile)();
+            if(res2.success) {
+                document.getElementById("editor-title").innerText = `📝 编辑 - ${currentSelectedFile}`;
+                document.getElementById("editor-textarea").value = res2.content;
+                document.getElementById("win-editor").style.display = "flex";
+                document.getElementById("win-editor").style.zIndex = ++maxZIndex;
+            } else alert(res2.error);
+        }
     } else {
         // 是文件，调用 Python 纯文本接口，拉起记事本
         let result = await eel.gui_read_file(currentSelectedFile)();
@@ -420,5 +447,234 @@ document.getElementById("btn-editor-save").addEventListener("click", async funct
         loadFiles();
     } else {
         alert("保存失败: " + result.error);
+    }
+});
+
+
+// --- 新增：新建文件按钮 ---
+document.getElementById("btn-gui-create").addEventListener("click", async function() {
+    let filename = prompt("请输入新建普通文件的名称:");
+    if (filename) {
+        let result = await eel.gui_create_file(filename.trim())();
+        if (result.success) loadFiles();
+        else alert("创建失败: " + result.error);
+    }
+});
+
+// --- 新增：彻底物理删除 (菜单点击) ---
+document.getElementById("menu-hard-delete").addEventListener("click", async function() {
+    if(confirm(`🚨 警告：确定要彻底物理销毁 '${currentSelectedFile}' 吗？此操作不可逆！`)) {
+        await eel.execute_cmd(`hard_delete ${currentSelectedFile}`)();
+        loadFiles();
+    }
+});
+
+// --- 新增：Shift + Delete 快捷键物理删除 ---
+document.addEventListener('keydown', async function(e) {
+    if (e.shiftKey && e.key === 'Delete' && currentSelectedFile) {
+        if(confirm(`🚨 快捷键触发：确定要物理彻底删除 '${currentSelectedFile}' 吗？此操作无法恢复！`)) {
+            await eel.execute_cmd(`hard_delete ${currentSelectedFile}`)();
+            loadFiles();
+        }
+    }
+});
+
+// --- 新增：创建软/硬链接 ---
+document.getElementById("menu-link").addEventListener("click", async function() {
+    let type = prompt("请输入链接类型 (h:硬链接, s:软链接):", "h");
+    if(!type) return;
+    let linkName = prompt(`请为 '${currentSelectedFile}' 输入链接名称:`);
+    if(linkName) {
+        let cmd = type.toLowerCase() === 's' ? `ln -s ${currentSelectedFile} ${linkName}` : `ln ${currentSelectedFile} ${linkName}`;
+        let res = await eel.execute_cmd(cmd)();
+        alert(res);
+        loadFiles();
+    }
+});
+
+
+// --- ⚙️ 系统管理员面板 ---
+document.getElementById("btn-admin-tools").addEventListener("click", () => {
+    let win = document.getElementById("win-admin");
+    win.style.display = "flex"; win.style.top = "15%"; win.style.left = "10%";
+});
+document.getElementById("close-admin").addEventListener("click", () => document.getElementById("win-admin").style.display = "none");
+makeDraggable(document.getElementById("win-admin"));
+
+// 绑定五个破坏性指令，执行后通过弹窗返回结果
+async function runAdminCmd(cmd, confirmMsg) {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    let res = await eel.execute_cmd(cmd)();
+    alert("【执行结果】\n" + res);
+}
+document.getElementById("btn-adm-status").addEventListener("click", () => runAdminCmd("status", null));
+document.getElementById("btn-adm-breakA").addEventListener("click", () => runAdminCmd("break A", "确定用铁锤砸坏物理磁盘A吗？"));
+document.getElementById("btn-adm-repair").addEventListener("click", () => runAdminCmd("repair", "将从磁盘B全盘复制物理数据到磁盘A，确定吗？"));
+document.getElementById("btn-adm-inject").addEventListener("click", () => runAdminCmd("inject_crash", "注入将导致下一次启动触发 fsck 自检修复，确定吗？"));
+document.getElementById("btn-adm-format").addEventListener("click", async () => {
+    // 💡 1. 在前端弹出精美的浏览器原生确认框
+    if (confirm("🚨 🔥 极其严重的警告：\n\n该操作将物理抹除 A/B 双盘的所有数据并重启文件系统！\n你确定要执行这无法撤销的操作吗？")) {
+        // 💡 2. 向后端发送带确认参数的指令
+        let res = await eel.execute_cmd("format y")();
+        alert("系统响应：\n" + res);
+        // 💡 3. 执行完毕后，自动强制刷新资源管理器
+        loadFiles();
+    }
+});
+
+// --- 📊 动态物理盘块图谱 ---
+document.getElementById("btn-disk-map").addEventListener("click", async () => {
+    let win = document.getElementById("win-disk-map");
+    win.style.display = "flex"; win.style.top = "10%"; win.style.left = "50%";
+    
+    // 渲染 512 个格子！
+    let grid = document.getElementById("disk-grid-container");
+    grid.innerHTML = "";
+    let mapData = await eel.gui_get_disk_map()();
+    
+    for (let i = 0; i < 512; i++) {
+        let box = document.createElement("div");
+        box.className = "disk-block";
+        if (mapData[i] === "boot") box.classList.add("block-boot");
+        else if (mapData[i] === "super") box.classList.add("block-super");
+        else if (mapData[i] === "inode") box.classList.add("block-inode");
+        else if (mapData[i] === "data") box.classList.add("block-data");
+
+        // 鼠标悬停显示这是第几个物理块
+        box.title = `物理盘块 Block: ${i} | 状态: ${mapData[i]}`;
+
+        // 💡 核心交互：单击物理块，调出 Hex Dump 审查数据！
+        box.addEventListener("click", async () => {
+            // 消除其他格子的闪烁高亮，给当前点击的格子加上霓虹紫描边
+            document.querySelectorAll(".disk-block").forEach(b => b.style.outline = "none");
+            box.style.outline = "1.5px solid #ff79c6";
+            
+            // 写入面板头部基本信息
+            document.getElementById("inspect-no").innerText = i;
+            let typeDesc = { "boot": "引导区 (Boot Sector)", "super": "超级块 (Super Block)", "inode": "i节点区 (Inode Table)", "data": "数据区 (Data Block)", "free": "空闲数据块" };
+            document.getElementById("inspect-type").innerText = typeDesc[mapData[i]] || "未知";
+            
+            // 跨界调用 Python 底层物理读
+            let res = await eel.gui_get_block_details(i)();
+            if (res.success) {
+                document.getElementById("inspect-hex").innerText = res.hex_dump;
+                document.getElementById("inspect-text").innerText = res.text_preview;
+            } else {
+                document.getElementById("inspect-hex").innerText = "物理读取失败: " + res.error;
+            }
+        });
+
+        grid.appendChild(box);
+    }
+});
+document.getElementById("close-disk-map").addEventListener("click", () => document.getElementById("win-disk-map").style.display = "none");
+makeDraggable(document.getElementById("win-disk-map"));
+
+// 抽离出一个专门渲染图谱的函数
+async function renderDiskMap() {
+    let grid = document.getElementById("disk-grid-container");
+    grid.innerHTML = "加载中...";
+    let mapData = await eel.gui_get_disk_map()();
+    grid.innerHTML = "";
+    
+    for (let i = 0; i < 512; i++) {
+        let box = document.createElement("div");
+        box.className = "disk-block";
+        if (mapData[i] === "boot") {
+            box.classList.add("block-boot");
+        } else if (mapData[i] === "super") {
+            box.classList.add("block-super");
+        } else if (mapData[i] === "inode") {
+            box.classList.add("block-inode");
+        } else if (mapData[i] === "data") {
+            box.classList.add("block-data");
+        }
+        
+        box.title = `物理盘块 Block: ${i}`;
+        
+        // 💡 核心交互：单击物理块，调出 Hex Dump 审查数据！
+        box.addEventListener("click", async () => {
+            // 消除其他格子的闪烁高亮，给当前点击的格子加上霓虹粉描边
+            document.querySelectorAll(".disk-block").forEach(b => b.style.outline = "none");
+            box.style.outline = "2px solid #ff79c6";
+            box.style.outlineOffset = "-1px"; // 防止撑大格子
+            
+            // 写入面板头部基本信息
+            document.getElementById("inspect-no").innerText = i;
+            let typeDesc = { 
+                "boot": "引导区 (Boot Sector)", 
+                "super": "超级块 (Super Block)", 
+                "inode": "i节点区 (Inode Table)", 
+                "data": "数据区 (Data Block)", 
+                "free": "空闲数据块" 
+            };
+            document.getElementById("inspect-type").innerText = typeDesc[mapData[i]] || "未知";
+            
+            // 跨界调用 Python 底层物理读
+            let res = await eel.gui_get_block_details(i)();
+            if (res.success) {
+                document.getElementById("inspect-hex").innerText = res.hex_dump;
+                document.getElementById("inspect-text").innerText = res.text_preview;
+            } else {
+                document.getElementById("inspect-hex").innerText = "物理读取失败: " + res.error;
+            }
+        });
+        
+        grid.appendChild(box);
+    }
+    // 联动刷新桌面的内核状态绿字
+    updateKernelInfo(currentLoggedUser);
+}
+
+// 绑定打开图谱的按钮
+document.getElementById("btn-disk-map").addEventListener("click", () => {
+    let win = document.getElementById("win-disk-map");
+    win.style.display = "flex"; 
+    win.style.top = "5%"; 
+    win.style.left = "15%"; // 💡 默认居中偏左一点点
+    renderDiskMap(); 
+});
+
+// 绑定图谱的 🔄 刷新按钮
+document.getElementById("refresh-disk-map").addEventListener("click", () => {
+    renderDiskMap();
+});
+
+let isMapMaximized = false;
+let oldMapWidth, oldMapHeight, oldMapTop, oldMapLeft;
+
+document.getElementById("max-disk-map").addEventListener("click", function() {
+    let win = document.getElementById("win-disk-map");
+    let gridContainer = document.getElementById("disk-grid-container");
+    
+    if (!isMapMaximized) {
+        // 1. 存下当前的尺寸和坐标
+        oldMapWidth = win.style.width;
+        oldMapHeight = win.style.height;
+        oldMapTop = win.style.top;
+        oldMapLeft = win.style.left;
+        
+        // 2. 赋予其全屏覆盖样式 (95% 的网页宽高度)
+        win.style.width = "95vw";
+        win.style.height = "85vh";
+        win.style.top = "5vh";
+        win.style.left = "2.5vw";
+        
+        // 3. 将左侧格子容器高度同步撑高，保证大图谱极其饱满！
+        gridContainer.style.maxHeight = "60vh";
+        
+        isMapMaximized = true;
+        this.innerText = "🗗"; // 切换为还原图标
+    } else {
+        // 还原尺寸
+        win.style.width = oldMapWidth;
+        win.style.height = oldMapHeight;
+        win.style.top = oldMapTop;
+        win.style.left = oldMapLeft;
+        
+        gridContainer.style.maxHeight = "330px"; // 还原格子高度
+        
+        isMapMaximized = false;
+        this.innerText = "🔲";
     }
 });

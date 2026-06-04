@@ -45,6 +45,7 @@
                 <button id="btn-go-back">⬅️ 返回</button>
                 <div id="address-bar">当前位置: Inode 1</div>
                 <button id="btn-gui-mkdir" style="background: #4CAF50; color: white;">➕ 新建文件夹</button>
+                <button id="btn-gui-create" style="background: #2196F3; color: white;">📄 新建文件</button>
             </div>
             <div class="window-body">
                 <!-- 图标展示网格 -->
@@ -98,9 +99,70 @@
             <div class="menu-item" id="menu-rename">✏️ 重命名</div>
             <div class="menu-item" id="menu-compress">🗜️ 压缩 / 解压</div>
             <div class="menu-item" id="menu-delete">🗑️ 移入回收站</div>
+            <div class="menu-item" id="menu-hard-delete" style="color: #ff4a4a; display: none;">🚨 彻底物理删除</div>
             <div class="menu-item" id="menu-restore" style="display: none;">↩️ 还原文件</div>
             <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 5px 0;">
             <div class="menu-item" id="menu-info">ℹ️ 属性详情</div>
+            <div class="menu-item" id="menu-link">🔗 创建链接</div>
+        </div>
+
+        <!-- ⚙️ Root专属：系统管理与灾难注入控制台 -->
+        <div class="window" id="win-admin" style="display: none; width: 450px; height: 350px;">
+            <div class="window-header" style="background: rgba(255, 152, 0, 0.4);">
+                <span class="window-title">⚙️ 系统灾难管理控制台 (Root 专区)</span>
+                <div class="window-controls"><span class="win-btn win-close" id="close-admin">×</span></div>
+            </div>
+            <div class="window-body" style="display: flex; flex-direction: column; gap: 15px;">
+                <button class="admin-btn" id="btn-adm-status" style="background: #2196F3;">🔍 查询双盘 RAID-1 健康状态</button>
+                <button class="admin-btn" id="btn-adm-breakA" style="background: #ff9800;">🔨 物理砸坏 磁盘 A (模拟脱机)</button>
+                <button class="admin-btn" id="btn-adm-repair" style="background: #4CAF50;">🩺 物理重构 磁盘 A (B -> A 同步)</button>
+                <button class="admin-btn" id="btn-adm-inject" style="background: #9c27b0;">💀 注入断电一致性漏洞 (Inode 劫持)</button>
+                <button class="admin-btn" id="btn-adm-format" style="background: #f44336;">🔥 格式化全盘 (不可逆)</button>
+            </div>
+        </div>
+
+        <!-- 📊 全景物理磁盘网格状态图谱 -->
+        <div class="window" id="win-disk-map" style="display: none; width: 900px; height: 580px;">
+            <div class="window-header" style="background: rgba(76, 175, 80, 0.4);">
+                <span class="window-title">📊 物理盘块全景实时监控 (Blocks 0 - 511)</span>
+                <div class="window-controls">
+                    <span class="win-btn" id="refresh-disk-map" style="background: #2196F3; margin-right: 5px;">🔄</span>
+                    <span class="win-btn" id="max-disk-map" style="background: #ff9800; margin-right: 5px;">🔲</span>
+                    <span class="win-btn win-close" id="close-disk-map">×</span>
+                </div>
+            </div>
+            <div class="window-body" style="display: flex; gap: 20px; overflow: hidden; height: calc(100% - 100px);">
+                <!-- 左半边：盘块网格，每行改为 16 个，更细长好装配 -->
+                <div style="flex: 1.2; display: flex; flex-direction: column;">
+                    <div style="margin-bottom: 10px; font-size: 11px; display: flex; gap: 6px; flex-wrap: wrap;">
+                        <span><span style="color:#aaa">⬛</span> 空闲</span>
+                        <span><span style="color:#E91E63">🟪</span> 引导区</span>
+                        <span><span style="color:#FF9800">🟧</span> 超级块</span>
+                        <span><span style="color:#03A9F4">🟦</span> i节点区</span>
+                        <span><span style="color:#4CAF50">🟩</span> 已占数据块</span>
+                    </div>
+                    <div id="disk-grid-container" style="display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; overflow-y: auto; max-height: 330px; padding: 5px; background: rgba(0,0,0,0.2); border-radius: 5px;">
+                        <!-- Grid 格子 -->
+                    </div>
+                </div>
+                
+                <!-- 💡 右半边：新增的 512 字节物理审查面板 -->
+                <div id="block-inspector" style="flex: 1.5; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px solid rgba(189, 147, 249, 0.2); padding: 15px; display: flex; flex-direction: column; overflow: hidden;">
+                    <h3 style="color: #bd93f9; font-size: 13px; margin-bottom: 8px; letter-spacing: 0.5px;">🔍 物理块级侦听审查器</h3>
+                    <div style="flex: 1; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #eee;">
+                        <div><strong>物理块号:</strong> <span id="inspect-no" style="color: #8be9fd;">-</span></div>
+                        <div><strong>功能分区:</strong> <span id="inspect-type" style="color: #ff79c6;">-</span></div>
+                        <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                            <strong>Hex Dump (十六进制转储):</strong>
+                            <pre id="inspect-hex" style="flex: 1; background: #000; color: #50fa7b; padding: 8px; border-radius: 5px; font-family: Consolas, monospace; font-size: 10px; overflow: auto; white-space: pre; margin-top: 5px;"></pre>
+                        </div>
+                        <div style="height: 60px; display: flex; flex-direction: column;">
+                            <strong>文本解码预览:</strong>
+                            <div id="inspect-text" style="flex: 1; background: #111; color: #8be9fd; padding: 5px; border-radius: 5px; overflow: auto; font-family: monospace; font-size: 11px;">-</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
     </div>
@@ -111,6 +173,8 @@
         <div class="app-icon" id="btn-terminal">💻 系统终端</div>
         <div class="app-icon" id="btn-disk-map">📊 物理图谱</div>
         <div class="app-icon" id="btn-logout" style="background: rgba(255, 74, 74, 0.2)">🔴 注销</div>
+        <!-- 💡 管理员专属工具栏，默认隐藏 -->
+        <div class="app-icon" id="btn-admin-tools" style="display: none; background: rgba(255, 152, 0, 0.3); color: #ffb74d;">⚙️ 系统管理</div>
     </div>
 
     <script src="app.js"></script>

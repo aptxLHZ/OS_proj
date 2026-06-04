@@ -259,8 +259,10 @@ def dir_list(detail=False):
                 # 精准间距控制
                 print(f"    {perm_str:<12} {owner_name:<8} {size:<5}B   Block:{phys_block:<3} {name_str:<12} (Inode: {ino})")
             else:
-                type_str = "<DIR>" if mode == 1 else "<FILE>"
-                print(f"    {type_str:<6} {name_str:<10} (Inode: {ino}, Size: {size}B)")
+                # 💡 优化非详细模式下的输出排版
+                type_icon = "📁" if mode == 1 else ("📄" if mode == 2 else "🔗")
+                # 采用固定宽度对齐：类型(4位) + 名字(16位) + 简要信息
+                print(f"    {type_icon:<2} {name_str:<16}  (Ino:{ino:<3}, {size:>4}B)")
     print("----------------------------\n")
 
 def create(parent_path, filename):

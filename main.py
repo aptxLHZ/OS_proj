@@ -75,6 +75,7 @@ def daemon_flush_thread():
             disk_core.superblock_dirty = False
             # 打印一个隐蔽的调试信息，证明后台在自动刷盘
             print("\n[后台] 内存超级块已自动同步刷盘...")
+            
 def run_single_command(user_input):
     """单条命令执行器 (对标原 CLI 核心逻辑)"""
     global open_fds
@@ -187,17 +188,19 @@ def run_single_command(user_input):
             show_disk_map(int(args[0]), int(args[1])) # 查看指定范围 (例如: map 80 40)
         
     elif cmd == "format":
-        # 安全特权校验：非 root 用户直接拦截
         uid, _ = get_current_user()
         if uid != 1:
             print("[!] 权限拒绝：只有系统管理员 root 才能执行格式化磁盘操作！")
             return
-        
-        confirm = input("[!] 此操作会抹去 A/B 盘所有数据，确定格式化吗？(y/n): ").strip().lower()
-        if confirm == 'y':
+        # 💡 核心修复：不再使用阻塞的 input()，改为检查命令行参数
+        # 这种设计模仿了 Linux 的 'rm -y' 强制执行逻辑
+        if args and args[0].lower() == 'y':
             sync_format_all()
             format_root_dir()
             mkdir("/", ".trash")
+            print("[+] 物理格式化成功！整个文件系统已重置。")
+        else:
+            print("[?] 确认：此操作将抹去所有数据！若确定，请输入 'format y'")
     
     elif cmd == "login":
         if not args: 
@@ -491,6 +494,100 @@ def gui_write_file(filename, content):
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@eel.expose
+def gui_get_file_info(filename):
+    """专门获取指定单个文件的详细属性"""
+    try:
+        from api import namei, get_inode
+        ino = namei(filename)
+        item_info = get_inode(ino)
+        mode = item_info[0]
+        
+        perm_str = "d" if mode == 1 else ("l" if mode == 4 else "-")
+        perm_str += "rwxr-xr-x" if mode == 1 else "rw-r--r--"
+        
+        owner_uid = item_info[2]
+        owner_name = "root" if owner_uid == 1 else ("guest" if owner_uid == 99 else f"usr{owner_uid-1}")
+        
+        info_str = f"📁 名称: {filename}\n🔑 权限: {perm_str}\n👤 属主: {owner_name}\n💾 大小: {item_info[4]} B\n📍 Inode: {ino}\n📦 物理首块: {item_info[5]}\n🔗 硬链接数: {item_info[1]}"
+        return {"success": True, "info": info_str}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@eel.expose
+def gui_is_root():
+    """判断当前登录用户是否为 root，用于前端显示管理员菜单"""
+    from kernel import get_current_user
+    uid, _ = get_current_user()
+    return uid == 1
+
+@eel.expose
+def gui_create_file(filename):
+    """前端新建文件接口"""
+    try:
+        from api import create
+        create(".", filename)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@eel.expose
+def gui_get_disk_map():
+    """获取前 512 个物理盘块的真实占用状态，用于前端图谱渲染"""
+    disk_map = ["free"] * 512
+    disk_map[0] = "boot"
+    disk_map[1] = "super"
+    for i in range(2, 34):
+        disk_map[i] = "inode"
+        
+    try:
+        from kernel import get_inode
+        for ino in range(512):
+            inode_info = get_inode(ino)
+            if inode_info[0] != 0: # 只要被占用了
+                for block in inode_info[5:15]:
+                    if block != 0 and block < 512:
+                        disk_map[block] = "data"
+    except Exception:
+        pass
+    return disk_map
+
+@eel.expose
+def gui_get_block_details(block_no):
+    """底层物理审查：读取指定物理块，打包为 Hex Dump 和文本预览"""
+    try:
+        from disk_core import read_block, BLOCKSIZ
+        data = read_block(block_no)
+        
+        # 💡 打包为类似 Linux 'hexdump -C' 的极客格式！
+        hex_lines = []
+        for i in range(0, BLOCKSIZ, 16):
+            chunk = data[i:i+16]
+            # 转换为 16 进制字符
+            hex_str = " ".join(f"{b:02x}" for b in chunk)
+            # 转换为可打印 ASCII 字符
+            ascii_str = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
+            hex_lines.append(f"{i:04x}  {hex_str:<47}  |{ascii_str}|")
+            
+        # 尝试进行 UTF-8 文本解析预览
+        try:
+            text_preview = data.decode('utf-8').strip('\x00')
+            if not text_preview: text_preview = "[块内容为空闲或全零]"
+        except Exception:
+            text_preview = "[二进制/非文本数据，无法解析]"
+            
+        return {
+            "success": True,
+            "hex_dump": "\n".join(hex_lines),
+            "text_preview": text_preview[:200] # 截取前 200 字符预览
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+
+# 格式化 = 物理清零 + 逻辑重建
 
 if __name__ == "__main__":
     # 如果 data/ 目录下文件坏了或者没有，自动执行初始化
