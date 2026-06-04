@@ -37,6 +37,8 @@ disk_a_healthy = True
 disk_b_healthy = True
 # 超级块脏标记 (当内存中的超级块状态发生变化时，置为 True，表示需要写回磁盘)
 superblock_dirty = False  
+damaged_blocks_a = set() # 记录磁盘A的物理坏道块号
+damaged_blocks_b = set() # 记录磁盘B的物理坏道块号
 
 class DiskInode:
     def __init__(self, mode=0, nlink=0, uid=0, gid=0, size=0, addr=None):
@@ -56,6 +58,11 @@ def init_virtual_disk(filename, num_blocks=20480, force=False):
     初始化虚拟磁盘文件
     force=True 时，无论文件是否存在，都会执行物理清零（填入 10MB 的 0x00）
     """
+    folder = os.path.dirname(filename)
+    if folder and not os.path.exists(folder):
+        os.makedirs(folder)
+        print(f"[*] 已自动创建缺失的目录: {folder}")
+        
     if os.path.exists(filename) and not force:
         print(f"[*] 磁盘文件 {filename} 已存在，跳过物理清零。")
         return
@@ -225,9 +232,9 @@ def sync_format_all():
     
 def write_block(block_no, data):
     """物理写盘块：支持 RAID-1 双盘智能双写"""
-    global disk_a_healthy, disk_b_healthy
+    global disk_a_healthy, disk_b_healthy,damaged_blocks_a
     # 写入 A 盘
-    if disk_a_healthy:
+    if disk_a_healthy and (block_no not in damaged_blocks_a):
         try:
             with open(DISK_A, "r+b") as f:
                 f.seek(block_no * BLOCKSIZ)
@@ -249,7 +256,7 @@ def read_block(block_no):
     """物理读盘块：实现无缝的热插拔/磁盘损坏自动降级切换"""
     global disk_a_healthy, disk_b_healthy
     # 1. 尝试从 A 盘读取
-    if disk_a_healthy:
+    if disk_a_healthy and (block_no not in damaged_blocks_a):
         try:
             with open(DISK_A, "rb") as f:
                 f.seek(block_no * BLOCKSIZ)
@@ -320,7 +327,9 @@ def reconstruct_disk_a_from_b():
     # "wb" 模式会自动清空磁盘 A（相当于插回了一块全新的空白盘 A）
     with open(DISK_B, "rb") as f_src, open(DISK_A, "wb") as f_dest:
         f_dest.write(f_src.read())
-            
+        
+    damaged_blocks_a.clear() 
+    disk_a_healthy = True
     print("[+] RAID-1 物理重构完毕！磁盘 A 状态已恢复，双盘镜像重归一致。")
 
 

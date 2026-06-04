@@ -131,23 +131,40 @@
                     <span class="win-btn win-close" id="close-disk-map">×</span>
                 </div>
             </div>
-            <div class="window-body" style="display: flex; gap: 20px; overflow: hidden; height: calc(100% - 100px);">
-                <!-- 左半边：盘块网格，每行改为 16 个，更细长好装配 -->
-                <div style="flex: 1.2; display: flex; flex-direction: column;">
-                    <div style="margin-bottom: 10px; font-size: 11px; display: flex; gap: 6px; flex-wrap: wrap;">
-                        <span><span style="color:#aaa">⬛</span> 空闲</span>
-                        <span><span style="color:#E91E63">🟪</span> 引导区</span>
-                        <span><span style="color:#FF9800">🟧</span> 超级块</span>
-                        <span><span style="color:#03A9F4">🟦</span> i节点区</span>
-                        <span><span style="color:#4CAF50">🟩</span> 已占数据块</span>
+            <div class="window-body" style="display: flex; gap: 20px; overflow: hidden; height: calc(100% - 40px); padding: 15px;">
+                <!-- 左半边：盘块网格 -->
+                <div style="flex: 1.8; display: flex; flex-direction: column;">
+                    <div style="margin-bottom: 10px; font-size: 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+                        <!-- 💡 修复1：用 CSS 方块完美对齐颜色，抛弃有色差的 Emoji -->
+                        <span style="display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:12px; height:12px; background:#333; border-radius:2px;"></span>空闲</span>
+                        <span style="display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:12px; height:12px; background:#E91E63; border-radius:2px;"></span>引导区</span>
+                        <span style="display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:12px; height:12px; background:#FF9800; border-radius:2px;"></span>超级块</span>
+                        <span style="display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:12px; height:12px; background:#03A9F4; border-radius:2px;"></span>i节点区</span>
+                        <span style="display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:12px; height:12px; background:#4CAF50; border-radius:2px;"></span>已占数据块</span>
+                        <span style="display:flex; align-items:center; gap:3px;"><span style="display:inline-block; width:12px; height:12px; background:#f44336; border-radius:2px;"></span>物理损坏</span>
                     </div>
-                    <div id="disk-grid-container" style="display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; overflow-y: auto; max-height: 330px; padding: 5px; background: rgba(0,0,0,0.2); border-radius: 5px;">
-                        <!-- Grid 格子 -->
+                    <div style="margin-bottom: 10px; font-size: 12px; display: flex; gap: 15px; align-items: center;">
+                        <!-- 💡 修复4：加入 A/B 盘独立查看选择器 -->
+                        <span>
+                            当前查看: 
+                            <select id="map-disk-target" style="background:#000; color:#fff; border:1px solid #777; border-radius:3px; padding:3px;">
+                                <option value="A">磁盘 A (主)</option>
+                                <option value="B">磁盘 B (备)</option>
+                            </select>
+                        </span>
+                        <!-- 💡 修复2：独立的跳转按钮，解决回车无效问题 -->
+                        <span>
+                            起始块: <input type="number" id="map-page-start" value="0" min="0" max="20000" style="width: 60px; background: #000; color:#fff; border: 1px solid #777; border-radius:3px; padding:3px;">
+                            <button id="btn-map-go" style="background: #2196F3; color: white; border: none; padding: 3px 8px; border-radius: 3px; cursor: pointer;">跳转</button>
+                        </span>
+                    </div>
+                    <div id="disk-grid-container" style="display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; overflow-y: auto; flex: 1; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 5px;">
+                        <!-- JS 动态渲染格子 -->
                     </div>
                 </div>
                 
-                <!-- 💡 右半边：新增的 512 字节物理审查面板 -->
-                <div id="block-inspector" style="flex: 1.5; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px solid rgba(189, 147, 249, 0.2); padding: 15px; display: flex; flex-direction: column; overflow: hidden;">
+                <!-- 右半边：物理审查面板 -->
+                <div id="block-inspector" style="flex: 1; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px solid rgba(189, 147, 249, 0.2); padding: 15px; display: flex; flex-direction: column; overflow: hidden;">
                     <h3 style="color: #bd93f9; font-size: 13px; margin-bottom: 8px; letter-spacing: 0.5px;">🔍 物理块级侦听审查器</h3>
                     <div style="flex: 1; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #eee;">
                         <div><strong>物理块号:</strong> <span id="inspect-no" style="color: #8be9fd;">-</span></div>
@@ -160,6 +177,8 @@
                             <strong>文本解码预览:</strong>
                             <div id="inspect-text" style="flex: 1; background: #111; color: #8be9fd; padding: 5px; border-radius: 5px; overflow: auto; font-family: monospace; font-size: 11px;">-</div>
                         </div>
+                        <!-- 💡 修复5：增加 B 盘的单独损坏按钮 -->
+                        <button id="btn-damage-selected-block" style="background:#f44336; color:white; border:none; padding:8px; border-radius:5px; margin-top:5px; cursor:pointer; font-weight:bold; width:100%; display:none;">💥 物理砸坏当前盘的此块</button>
                     </div>
                 </div>
             </div>

@@ -49,6 +49,13 @@ def namei(path):
             
     # 💡 路径解析到终点，如果最终落脚点还是个符号链接，我们也自动还原至其指向的原文件！
     final_info = get_inode(current_inode_no)
+    # 校验：如果是目录，且不是根目录(1)和回收站(51)，则检查属主权限
+    if final_info[0] == 1 and current_inode_no != 1 and current_inode_no != 51:
+        dir_owner_uid = final_info[2]
+        current_uid, _ = get_current_user()
+        if current_uid != 1 and current_uid != dir_owner_uid:
+            raise Exception(f"权限拒绝：您无权进入该目录！")
+        
     if final_info[0] == 4:
         sym_block = final_info[5]
         sym_path = read_block(sym_block)[:final_info[4]].decode('utf-8')
@@ -300,7 +307,14 @@ def open_file(filepath, mode='r'):
     
     if inode_info[0] == 1:
         raise Exception("操作失败：不能打开一个目录")
-        
+    
+    # 用户校验    
+    current_uid, _ = get_current_user()
+    file_owner_uid = inode_info[2] # 获取该文件的创建者 UID
+    # 如果当前用户不是创建者本人，且不是超级管理员 root (UID 1)，直接拦截！
+    if current_uid != 1 and current_uid != file_owner_uid:
+        raise Exception(f"权限拒绝：您无权读写属于用户 {file_owner_uid} 的私密文件！")
+    
     mem_inode = iget(ino) # 载入内存活动 i 节点 (引用+1)
     
     # 💡 核心修复：如果是 "w" (写模式) 打开，执行系统级 Truncate (截断清空)
@@ -361,7 +375,7 @@ def close_file(fd):
     print(f"[-] 关闭描述符 fd = {fd}")
 
 def write_file(fd, text_content):
-    """基于文件描述符与光标写入文本"""
+    """【高级索引写入】：支持 10 个物理盘块 (最大 5120B) 的动态索引分配与精准存盘"""
     if fd < 0 or fd >= NOFILE or user_file_table[fd] is None:
         raise Exception("操作失败：无效的文件描述符")
         
@@ -372,33 +386,45 @@ def write_file(fd, text_content):
         raise Exception("读写许可错误：该描述符只读")
         
     mem_inode = f_desc.mem_inode
-    disk_inode = mem_inode.disk_inode
+    disk_inode = mem_inode.disk_inode # 💡 直接操作内存中的活跃磁盘 Inode 对象
     
     data_bytes = text_content.encode('utf-8')
-    if f_desc.f_offset + len(data_bytes) > BLOCKSIZ:
-        raise Exception("当前版本暂不支持单文件超 512 字节写入")
+    # 💡 1. 突破 512B 限制！支持最大 10 块直接索引（512B * 10 = 5120B）
+    if len(data_bytes) > BLOCKSIZ * 10:
+        raise Exception("操作失败：当前版本暂不支持超过 5120 字节 (10 块) 的文件写入")
         
-    block_no = disk_inode.addr[0]
-    if block_no == 0:
-        block_no = balloc()
-        disk_inode.addr[0] = block_no
-        
-    # 物理读盘块内容 -> 在光标处修改字节 -> 同步写回物理盘
-    block_data = bytearray(read_block(block_no))
-    offset = f_desc.f_offset
-    block_data[offset : offset + len(data_bytes)] = data_bytes
-    write_block(block_no, block_data)
+    # 2. 动态分配物理块并写入
+    from disk_core import balloc, write_block
+    from kernel import write_inode
     
-    # 光标自动向后移动
+    # 遍历 10 个索引指针，将长数据切片并写入对应的盘块
+    for i in range(10):
+        start_offset = i * BLOCKSIZ
+        if start_offset >= len(data_bytes):
+            break # 数据写完了
+            
+        chunk = data_bytes[start_offset : start_offset + BLOCKSIZ]
+        
+        block_no = disk_inode.addr[i]
+        if block_no == 0:
+            # 💡 发现索引为空，动态向内核申请一个新的空闲盘块！
+            block_no = balloc()
+            disk_inode.addr[i] = block_no
+            
+        # 物理写入该数据切片
+        write_block(block_no, chunk.ljust(BLOCKSIZ, b'\x00'))
+        
+    # 3. 移动光标，更新文件物理大小
     f_desc.f_offset += len(data_bytes)
-    # 文件物理大小等于光标最大游走位置
     if f_desc.f_offset > disk_inode.size:
         disk_inode.size = f_desc.f_offset
         
-    print(f"[+] fd={fd} 写入了 {len(data_bytes)} 字节，光标位置 -> {f_desc.f_offset}")
+    # 4. 💡 【Bug 修复】：直接写回已经修改好所有 addr 指针和大小的 disk_inode 对象！
+    write_inode(mem_inode.inode_no, disk_inode)
+    print(f"[+] fd={fd} 写入了 {len(data_bytes)} 字节，光标 -> {f_desc.f_offset}")
 
 def read_file(fd, size=None):
-    """基于文件描述符与光标读取数据 (💡 支持对压缩文件进行全自动、透明解压读取！)"""
+    """【高级索引读取】：从 10 个索引盘块中拼接并读取数据"""
     if fd < 0 or fd >= NOFILE or user_file_table[fd] is None:
         raise Exception("操作失败：无效的文件描述符")
         
@@ -409,28 +435,31 @@ def read_file(fd, size=None):
     disk_inode = mem_inode.disk_inode
     
     offset = f_desc.f_offset
-    
-    # 💡 保护锁：如果文件的 mode == 3，说明是压缩状态，自动在内核内存中进行透明解压！
     is_compressed = (disk_inode.mode == 3)
-    block_no = disk_inode.addr[0]
-    block_data = read_block(block_no)
     
+    # 💡 1. 动态索引拼接：遍历该文件占用的所有物理块，在内存中还原出完整的连续字节流！
+    full_raw_data = bytearray()
+    for i in range(10):
+        block_no = disk_inode.addr[i]
+        if block_no != 0:
+            full_raw_data.extend(read_block(block_no))
+        else:
+            break
+            
     if is_compressed:
         compressed_size = disk_inode.size
-        # 自动调用解压引擎还原真实数据
-        actual_data = rle_decompress(block_data[:compressed_size])
+        actual_data = rle_decompress(full_raw_data[:compressed_size])
         file_size = len(actual_data)
     else:
-        actual_data = block_data
+        actual_data = bytes(full_raw_data)
         file_size = disk_inode.size
         
     if offset >= file_size:
-        return "" # 读到末尾
+        return ""
         
     read_size = file_size - offset if size is None else min(size, file_size - offset)
-    
     text = actual_data[offset : offset + read_size].decode('utf-8')
-    f_desc.f_offset += read_size # 移动读写指针
+    f_desc.f_offset += read_size
     return text
 
 def restore(filename):

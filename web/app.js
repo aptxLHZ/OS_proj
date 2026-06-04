@@ -570,61 +570,88 @@ document.getElementById("btn-disk-map").addEventListener("click", async () => {
 document.getElementById("close-disk-map").addEventListener("click", () => document.getElementById("win-disk-map").style.display = "none");
 makeDraggable(document.getElementById("win-disk-map"));
 
-// 抽离出一个专门渲染图谱的函数
 async function renderDiskMap() {
     let grid = document.getElementById("disk-grid-container");
-    grid.innerHTML = "加载中...";
-    let mapData = await eel.gui_get_disk_map()();
+    grid.innerHTML = "<div style='color:white; padding: 20px;'>加载中...</div>";
+    
+    let startBlock = parseInt(document.getElementById("map-page-start").value) || 0;
+    let targetDisk = document.getElementById("map-disk-target").value; // "A" 或 "B"
+    
+    // 💡 动态更新窗口标题
+    document.querySelector("#win-disk-map .window-title").innerText = `📊 物理盘块全景实时监控 - 磁盘 ${targetDisk} (Blocks ${startBlock} - ${startBlock+511})`;
+    
+    let res = await eel.gui_get_disk_map(startBlock, targetDisk)();
+    let mapData = res.map;
+    
+    if (!mapData || !Array.isArray(mapData)) {
+        mapData = Array(512).fill("free");
+    }
+    
     grid.innerHTML = "";
+    let damageBtn = document.getElementById("btn-damage-selected-block");
+    if (damageBtn) damageBtn.style.display = "none";
     
     for (let i = 0; i < 512; i++) {
+        let physNo = startBlock + i;
         let box = document.createElement("div");
         box.className = "disk-block";
-        if (mapData[i] === "boot") {
-            box.classList.add("block-boot");
-        } else if (mapData[i] === "super") {
-            box.classList.add("block-super");
-        } else if (mapData[i] === "inode") {
-            box.classList.add("block-inode");
-        } else if (mapData[i] === "data") {
-            box.classList.add("block-data");
-        }
         
-        box.title = `物理盘块 Block: ${i}`;
+        if (mapData[i] === "boot") box.classList.add("block-boot");
+        else if (mapData[i] === "super") box.classList.add("block-super");
+        else if (mapData[i] === "inode") box.classList.add("block-inode");
+        else if (mapData[i] === "data") box.classList.add("block-data");
+        else if (mapData[i] === "damaged") box.classList.add("block-damaged");
         
-        // 💡 核心交互：单击物理块，调出 Hex Dump 审查数据！
+        box.title = `磁盘 ${targetDisk} | Block: ${physNo}`;
+        
         box.addEventListener("click", async () => {
-            // 消除其他格子的闪烁高亮，给当前点击的格子加上霓虹粉描边
             document.querySelectorAll(".disk-block").forEach(b => b.style.outline = "none");
-            box.style.outline = "2px solid #ff79c6";
-            box.style.outlineOffset = "-1px"; // 防止撑大格子
+            box.style.outline = "1.5px solid #ff79c6";
+            box.style.outlineOffset = "-1px";
             
-            // 写入面板头部基本信息
-            document.getElementById("inspect-no").innerText = i;
-            let typeDesc = { 
-                "boot": "引导区 (Boot Sector)", 
-                "super": "超级块 (Super Block)", 
-                "inode": "i节点区 (Inode Table)", 
-                "data": "数据区 (Data Block)", 
-                "free": "空闲数据块" 
-            };
+            document.getElementById("inspect-no").innerText = physNo;
+            let typeDesc = { "boot": "引导区", "super": "超级块", "inode": "i节点区", "data": "数据区", "free": "空闲数据区", "damaged": "🚨 物理已损坏" };
             document.getElementById("inspect-type").innerText = typeDesc[mapData[i]] || "未知";
             
-            // 跨界调用 Python 底层物理读
-            let res = await eel.gui_get_block_details(i)();
-            if (res.success) {
-                document.getElementById("inspect-hex").innerText = res.hex_dump;
-                document.getElementById("inspect-text").innerText = res.text_preview;
+            let isRoot = (typeof currentLoggedUser !== 'undefined' && currentLoggedUser === "root");
+            let canDamage = (physNo >= 2) && isRoot;
+            if (damageBtn) {
+                damageBtn.style.display = canDamage ? "block" : "none";
+                damageBtn.innerText = `💥 物理砸坏 ${targetDisk} 盘此块`;
+            }
+            
+            // 💡 上帝视角读取真实的物理数据！
+            let detailRes = await eel.gui_get_block_details(physNo, targetDisk)();
+            document.getElementById("inspect-hex").innerText = detailRes.hex_dump;
+            document.getElementById("inspect-text").innerText = detailRes.text_preview;
+            if(!detailRes.success) {
+                document.getElementById("inspect-hex").style.color = "#f44336"; // 报错用红色
+                document.getElementById("inspect-text").style.color = "#f44336";
             } else {
-                document.getElementById("inspect-hex").innerText = "物理读取失败: " + res.error;
+                document.getElementById("inspect-hex").style.color = "#50fa7b"; // 正常用绿色
+                document.getElementById("inspect-text").style.color = "#8be9fd";
             }
         });
         
         grid.appendChild(box);
     }
-    // 联动刷新桌面的内核状态绿字
-    updateKernelInfo(currentLoggedUser);
 }
+
+// 💡 修复跳转与切换事件
+document.getElementById("btn-map-go").addEventListener("click", renderDiskMap);
+document.getElementById("map-page-start").addEventListener("keydown", (e) => { if(e.key === "Enter") renderDiskMap(); });
+document.getElementById("map-disk-target").addEventListener("change", renderDiskMap);
+
+// 💡 损坏按钮
+document.getElementById("btn-damage-selected-block").addEventListener("click", async () => {
+    let blockNo = parseInt(document.getElementById("inspect-no").innerText);
+    let targetDisk = document.getElementById("map-disk-target").value;
+    if (confirm(`🚨 物理砸坏警告：\n确定要砸坏磁盘 ${targetDisk} 的 Block ${blockNo} 吗？`)) {
+        let result = await eel.gui_damage_block(blockNo, targetDisk)();
+        if (result.success) renderDiskMap();
+        else alert("损坏注入失败: " + result.error);
+    }
+});
 
 // 绑定打开图谱的按钮
 document.getElementById("btn-disk-map").addEventListener("click", () => {

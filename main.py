@@ -114,6 +114,7 @@ def run_single_command(user_input):
         print("  map                    : 查看物理盘块状态图谱 (支持参数 map [start] [len])")
         print("  format                 : (限管理员) 物理重新初始化并清空磁盘")
         print("  exit                   : 安全退出系统\n")
+        print("\n-------------------------")
         
     elif cmd in ["ls", "dir"]:
         # 💡 支持传入参数 -l 展示详细图谱！ (如输入 ls -l)
@@ -533,44 +534,89 @@ def gui_create_file(filename):
         return {"success": False, "error": str(e)}
 
 @eel.expose
-def gui_get_disk_map():
-    """获取前 512 个物理盘块的真实占用状态，用于前端图谱渲染"""
-    disk_map = ["free"] * 512
-    disk_map[0] = "boot"
-    disk_map[1] = "super"
-    for i in range(2, 34):
-        disk_map[i] = "inode"
+def gui_get_disk_map(start_block=0, target_disk="A"):
+    """【防崩溃保护版】：获取指定磁盘前 512 个物理盘块的真实占用状态"""
+    try: start_block = int(start_block)
+    except: start_block = 0
+        
+    total_visual_blocks = 512
+    disk_map = ["free"] * total_visual_blocks
+    
+    for i in range(total_visual_blocks):
+        phys_no = start_block + i
+        if phys_no == 0: disk_map[i] = "boot"
+        elif phys_no == 1: disk_map[i] = "super"
+        elif 2 <= phys_no <= 33: disk_map[i] = "inode"
         
     try:
         from kernel import get_inode
         for ino in range(512):
             inode_info = get_inode(ino)
-            if inode_info[0] != 0: # 只要被占用了
+            if inode_info[0] != 0:
                 for block in inode_info[5:15]:
-                    if block != 0 and block < 512:
-                        disk_map[block] = "data"
-    except Exception:
-        pass
-    return disk_map
+                    if block != 0 and start_block <= block < start_block + total_visual_blocks:
+                        disk_map[block - start_block] = "data"
+    except Exception: pass
+        
+    # 💡 根据查看的是 A 盘还是 B 盘，渲染特定的红块！
+    try:
+        import disk_core
+        damaged_set = disk_core.damaged_blocks_a if target_disk == "A" else getattr(disk_core, "damaged_blocks_b", set())
+        for block in damaged_set:
+            if start_block <= block < start_block + total_visual_blocks:
+                disk_map[block - start_block] = "damaged"
+    except Exception: pass
+        
+    return {"map": disk_map, "start": start_block}
 
 @eel.expose
-def gui_get_block_details(block_no):
-    """底层物理审查：读取指定物理块，打包为 Hex Dump 和文本预览"""
+def gui_damage_block(block_no, target_disk="A"):
+    """【API安全拦截】：损坏物理块限制"""
     try:
-        from disk_core import read_block, BLOCKSIZ
-        data = read_block(block_no)
+        from kernel import get_current_user
+        uid, _ = get_current_user()
+        if uid != 1: raise Exception("权限拒绝：只有系统管理员 root 才能向介质注入坏道！")
+            
+        import disk_core
+        if not hasattr(disk_core, "damaged_blocks_b"): disk_core.damaged_blocks_b = set()
         
-        # 💡 打包为类似 Linux 'hexdump -C' 的极客格式！
+        if target_disk == "A": disk_core.damaged_blocks_a.add(int(block_no))
+        else: disk_core.damaged_blocks_b.add(int(block_no))
+        
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@eel.expose
+def gui_get_block_details(block_no, target_disk="A"):
+    """💡 上帝视角：强制读取指定物理文件，绕过系统的 RAID 容错机制！"""
+    try:
+        from disk_core import DISK_A, DISK_B, BLOCKSIZ
+        import disk_core
+        
+        # 1. 模拟致命物理坏道！如果该块在坏道列表里，直接返回乱码报错！
+        damaged_set = disk_core.damaged_blocks_a if target_disk == "A" else getattr(disk_core, "damaged_blocks_b", set())
+        if block_no in damaged_set:
+            return {
+                "success": False, 
+                "error": "🚨 FATAL ERROR: 物理扇区已严重损坏 (Bad Sector)",
+                "hex_dump": "XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX |................|\n" * 10 + "    ... (DATA CORRUPTED)",
+                "text_preview": "   [硬件 I/O 错误，数据丢失]   "
+            }
+            
+        # 2. 绕过容错，直接去指定的文件读
+        disk_file = DISK_A if target_disk == "A" else DISK_B
+        with open(disk_file, "rb") as f:
+            f.seek(block_no * BLOCKSIZ)
+            data = f.read(BLOCKSIZ)
+            
         hex_lines = []
         for i in range(0, BLOCKSIZ, 16):
             chunk = data[i:i+16]
-            # 转换为 16 进制字符
             hex_str = " ".join(f"{b:02x}" for b in chunk)
-            # 转换为可打印 ASCII 字符
             ascii_str = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
             hex_lines.append(f"{i:04x}  {hex_str:<47}  |{ascii_str}|")
             
-        # 尝试进行 UTF-8 文本解析预览
         try:
             text_preview = data.decode('utf-8').strip('\x00')
             if not text_preview: text_preview = "[块内容为空闲或全零]"
@@ -580,11 +626,10 @@ def gui_get_block_details(block_no):
         return {
             "success": True,
             "hex_dump": "\n".join(hex_lines),
-            "text_preview": text_preview[:200] # 截取前 200 字符预览
+            "text_preview": text_preview[:200]
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}
-
+        return {"success": False, "error": str(e), "hex_dump": "读取失败", "text_preview": "读取失败"}
 
 
 # 格式化 = 物理清零 + 逻辑重建
