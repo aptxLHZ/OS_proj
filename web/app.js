@@ -87,11 +87,13 @@ async function loadFiles() {
     
     files.forEach(file => {
         // 过滤掉系统隐藏的垃圾箱和 trashinfo (保持桌面清爽)
-        if (file.name === ".trash" || file.name === ".trashinfo") return;
+        if (file.name === ".trashinfo") return;
 
         // 根据文件类型指定精美图标
         let icon = "📄";
+        
         if (file.type === "dir") icon = "📁";
+            if (file.name === ".trash") icon = "🗑️";
         else if (file.type === "link") icon = "🔗";
 
         let item = document.createElement("div");
@@ -239,8 +241,12 @@ document.getElementById("terminal-input").addEventListener("keydown", async func
         // 3) 将回显结果打印到屏幕上
         outputArea.innerHTML += `<div>${stdout.replace(/\n/g, "<br>")}</div>`;
 
+        // 如果用户输入的是 exit
         if (cmdText === "exit") {
-            eel.gui_exit()(); 
+            eel.gui_exit()(); // 通知 Python 安全刷盘并关闭
+            setTimeout(() => {
+                window.close(); // 💡 强行关闭前端网页窗口！
+            }, 300); // 留 300 毫秒让后端收尾
         }
         
         // 4) 滚动条自动滚到最底部

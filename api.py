@@ -4,6 +4,7 @@ from disk_core import read_block, write_block, BLOCKSIZ, DATASTART, ialloc, ball
 from kernel import get_inode, write_inode, iget, iput, sys_file_table, user_file_table, FileDesc, USER_DB, get_current_user, set_current_user
 
 current_working_dir_inode = 1  # 初始为根目录
+current_working_dir_path = "/" # 全局跟踪当前绝对路径字符串
 
 def namei(path):
     """动态路径解析：支持绝对路径、相对路径和符号链接(Symlink)自动跳转"""
@@ -96,9 +97,28 @@ def mkdir(parent_path, dirname):
     print(f"[+] 目录 '{dirname}' 创建成功，Inode: {new_ino}, Block: {new_block}")
 
 def chdir(path):
-    global current_working_dir_inode
+    global current_working_dir_inode, current_working_dir_path
     new_ino = namei(path)
     current_working_dir_inode = new_ino
+    
+    # 💡 同步更新绝对路径字符串
+    if path == "/":
+        current_working_dir_path = "/"
+    elif path.startswith("/"):
+        current_working_dir_path = path
+    elif path == "..":
+        if current_working_dir_path != "/":
+            parts = current_working_dir_path.rstrip("/").split("/")[:-1]
+            current_working_dir_path = "/" + "/".join(parts[1:])
+            if current_working_dir_path == "": current_working_dir_path = "/"
+    elif path == ".":
+        pass
+    else:
+        if current_working_dir_path == "/":
+            current_working_dir_path = "/" + path
+        else:
+            current_working_dir_path = current_working_dir_path + "/" + path
+            
     print(f"[+] 当前目录已切换至 Inode: {new_ino}")
     
 def _soft_delete(parent_path, name, expected_mode):
@@ -161,20 +181,31 @@ def _soft_delete(parent_path, name, expected_mode):
     write_block(trash_block, trash_data)
     
     # 5. 记录元数据映射 (写入 /.trashinfo 隐藏文件)
-    resolved_parent_path = parent_path if parent_path != "." else "/"
-    if not resolved_parent_path.startswith("/"):
-         resolved_parent_path = "/" + resolved_parent_path
+    global current_working_dir_path
+    resolved_parent_path = parent_path
+    if parent_path == ".":
+        resolved_parent_path = current_working_dir_path # 💡 自动展开当前绝对路径！
+    elif not resolved_parent_path.startswith("/"):
+        resolved_parent_path = "/" + resolved_parent_path
+         
     try:
-        try:
-            namei("/.trashinfo")
-        except Exception:
-            create("/", ".trashinfo")
+        try: namei("/.trashinfo")
+        except Exception: create("/", ".trashinfo")
             
-        fd = open_file("/.trashinfo", "w")
-        old_metadata = read_file(fd)
+        # 💡 核心修复：先用 "r" 模式读出老数据，避免 "w" 的强制清空！
+        old_metadata = ""
+        try:
+            fd_r = open_file("/.trashinfo", "r")
+            old_metadata = read_file(fd_r)
+            close_file(fd_r)
+        except Exception:
+            pass
+            
+        # 💡 再用 "w" 模式覆盖写入拼接后的数据！
+        fd_w = open_file("/.trashinfo", "w")
         new_record = f"{name}:{resolved_parent_path}\n"
-        write_file(fd, old_metadata + new_record)
-        close_file(fd)
+        write_file(fd_w, old_metadata + new_record)
+        close_file(fd_w)
     except Exception as e:
         print(f"[!] 回收站元数据记录失败: {e}")
         
