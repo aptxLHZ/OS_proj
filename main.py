@@ -571,45 +571,50 @@ def gui_get_disk_map(start_block=0, target_disk="A"):
 
 @eel.expose
 def gui_damage_block(block_no, target_disk="A"):
-    """【API安全拦截】：损坏物理块限制"""
+    """【真物理坏道注入】：直接往真实的 bin 文件里覆写死机乱码！绝非前端把戏！"""
     try:
         from kernel import get_current_user
         uid, _ = get_current_user()
         if uid != 1: raise Exception("权限拒绝：只有系统管理员 root 才能向介质注入坏道！")
             
         import disk_core
+        from disk_core import DISK_A, DISK_B, BLOCKSIZ
+        block_no = int(block_no)
+        
         if not hasattr(disk_core, "damaged_blocks_b"): disk_core.damaged_blocks_b = set()
         
-        if target_disk == "A": disk_core.damaged_blocks_a.add(int(block_no))
-        else: disk_core.damaged_blocks_b.add(int(block_no))
+        # 1. 记录坏道标记（用于图谱变红拦截）
+        if target_disk == "A": disk_core.damaged_blocks_a.add(block_no)
+        else: disk_core.damaged_blocks_b.add(block_no)
         
+        # 2. 💥 【真·物理破坏】：往真实的磁盘文件中写入 512 字节的 "DEADBEEF" 乱码！
+        disk_file = DISK_A if target_disk == "A" else DISK_B
+        with open(disk_file, "r+b") as f:
+            f.seek(block_no * BLOCKSIZ)
+            # DEADBEEF 占用 8 字节，乘 64 刚好 512 字节
+            f.write(b"DEADBEEF" * 64) 
+            
+        print(f"[!] 物理灾难：已将磁盘 {target_disk} 的 {block_no} 块彻底物理覆写损毁！")
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 @eel.expose
 def gui_get_block_details(block_no, target_disk="A"):
-    """💡 上帝视角：强制读取指定物理文件，绕过系统的 RAID 容错机制！"""
+    """💡 上帝视角：强制读取指定物理文件，展示真实的十六进制数据！绝不用假数据骗人！"""
     try:
         from disk_core import DISK_A, DISK_B, BLOCKSIZ
         import disk_core
+        block_no = int(block_no)
         
-        # 1. 模拟致命物理坏道！如果该块在坏道列表里，直接返回乱码报错！
-        damaged_set = disk_core.damaged_blocks_a if target_disk == "A" else getattr(disk_core, "damaged_blocks_b", set())
-        if block_no in damaged_set:
-            return {
-                "success": False, 
-                "error": "🚨 FATAL ERROR: 物理扇区已严重损坏 (Bad Sector)",
-                "hex_dump": "XX XX XX XX XX XX XX XX  XX XX XX XX XX XX XX XX |................|\n" * 10 + "    ... (DATA CORRUPTED)",
-                "text_preview": "   [硬件 I/O 错误，数据丢失]   "
-            }
-            
-        # 2. 绕过容错，直接去指定的文件读
+        # 1. 绕过容错，直接去指定的真实物理文件里读
+        # 因为我们在 gui_damage_block 里确实覆写了 DEADBEEF，这里必然能读出 DEADBEEF
         disk_file = DISK_A if target_disk == "A" else DISK_B
         with open(disk_file, "rb") as f:
             f.seek(block_no * BLOCKSIZ)
             data = f.read(BLOCKSIZ)
             
+        # 2. 原汁原味的 Hex Dump 格式化
         hex_lines = []
         for i in range(0, BLOCKSIZ, 16):
             chunk = data[i:i+16]
@@ -618,19 +623,24 @@ def gui_get_block_details(block_no, target_disk="A"):
             hex_lines.append(f"{i:04x}  {hex_str:<47}  |{ascii_str}|")
             
         try:
-            text_preview = data.decode('utf-8').strip('\x00')
+            # errors='replace' 可以防止遇到乱码时 decode 崩溃，强行展示乱码字符
+            text_preview = data.decode('utf-8', errors='replace').strip('\x00')
             if not text_preview: text_preview = "[块内容为空闲或全零]"
         except Exception:
             text_preview = "[二进制/非文本数据，无法解析]"
             
+        # 3. 查一下坏道名单，仅仅是为了告诉前端用“红色”显示，数据依然如实返回！
+        damaged_set = disk_core.damaged_blocks_a if target_disk == "A" else getattr(disk_core, "damaged_blocks_b", set())
+        is_damaged = block_no in damaged_set
+        
         return {
-            "success": True,
+            "success": not is_damaged, # 如果损坏，传回 False 告诉前端标红
             "hex_dump": "\n".join(hex_lines),
             "text_preview": text_preview[:200]
         }
     except Exception as e:
         return {"success": False, "error": str(e), "hex_dump": "读取失败", "text_preview": "读取失败"}
-
+    
 
 # 格式化 = 物理清零 + 逻辑重建
 

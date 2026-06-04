@@ -74,6 +74,7 @@ document.getElementById("btn-file-manager").addEventListener("click", function()
     // 居中显示窗口
     win.style.top = "15%";
     win.style.left = "25%";
+    bringToFront(win);
     loadFiles(); // 每次打开自动加载文件
 });
 
@@ -90,6 +91,13 @@ async function loadFiles() {
     
     // 调用 Python 接口获取当前目录所有文件信息
     let files = await eel.gui_get_files()();
+    // 💡 拦截真·物理崩溃：如果双盘目录块全毁，后端会抛异常返回错误/null
+    if (!files || !Array.isArray(files)) {
+        fileGrid.innerHTML = `<div style='color:#f44336; font-weight:bold; font-size:16px; padding: 20px;'>
+            🚨 严重物理灾难：<br><br>当前目录所在的物理盘块 (双盘) 已全部严重损坏！<br>无法读取任何目录项数据！
+            </div>`;
+        return;
+    }
     fileGrid.innerHTML = ""; // 清空
     
     files.forEach(file => {
@@ -191,7 +199,7 @@ document.getElementById("btn-terminal").addEventListener("click", async function
     win.style.display = "flex";
     win.style.top = "20%";
     win.style.left = "30%";
-    
+    bringToFront(win);
     // 聚焦输入框并刷新提示符
     document.getElementById("terminal-input").focus();
     refreshTerminalPrompt();
@@ -496,7 +504,10 @@ document.getElementById("menu-link").addEventListener("click", async function() 
 // --- ⚙️ 系统管理员面板 ---
 document.getElementById("btn-admin-tools").addEventListener("click", () => {
     let win = document.getElementById("win-admin");
-    win.style.display = "flex"; win.style.top = "15%"; win.style.left = "10%";
+    win.style.display = "flex";
+    bringToFront(win); 
+    win.style.top = "15%"; 
+    win.style.left = "10%";
 });
 document.getElementById("close-admin").addEventListener("click", () => document.getElementById("win-admin").style.display = "none");
 makeDraggable(document.getElementById("win-admin"));
@@ -507,8 +518,8 @@ async function runAdminCmd(cmd, confirmMsg) {
     let res = await eel.execute_cmd(cmd)();
     alert("【执行结果】\n" + res);
 }
-document.getElementById("btn-adm-status").addEventListener("click", () => runAdminCmd("status", null));
-document.getElementById("btn-adm-breakA").addEventListener("click", () => runAdminCmd("break A", "确定用铁锤砸坏物理磁盘A吗？"));
+// document.getElementById("btn-adm-status").addEventListener("click", () => runAdminCmd("status", null));
+// document.getElementById("btn-adm-breakA").addEventListener("click", () => runAdminCmd("break A", "确定用铁锤砸坏物理磁盘A吗？"));
 document.getElementById("btn-adm-repair").addEventListener("click", () => runAdminCmd("repair", "将从磁盘B全盘复制物理数据到磁盘A，确定吗？"));
 document.getElementById("btn-adm-inject").addEventListener("click", () => runAdminCmd("inject_crash", "注入将导致下一次启动触发 fsck 自检修复，确定吗？"));
 document.getElementById("btn-adm-format").addEventListener("click", async () => {
@@ -526,6 +537,7 @@ document.getElementById("btn-adm-format").addEventListener("click", async () => 
 document.getElementById("btn-disk-map").addEventListener("click", async () => {
     let win = document.getElementById("win-disk-map");
     win.style.display = "flex"; win.style.top = "10%"; win.style.left = "50%";
+    bringToFront(win);
     
     // 渲染 512 个格子！
     let grid = document.getElementById("disk-grid-container");
@@ -555,12 +567,19 @@ document.getElementById("btn-disk-map").addEventListener("click", async () => {
             document.getElementById("inspect-type").innerText = typeDesc[mapData[i]] || "未知";
             
             // 跨界调用 Python 底层物理读
-            let res = await eel.gui_get_block_details(i)();
-            if (res.success) {
-                document.getElementById("inspect-hex").innerText = res.hex_dump;
-                document.getElementById("inspect-text").innerText = res.text_preview;
+            let res = await eel.gui_get_block_details(physNo, targetDisk)();
+            // 💡 修复：无论好坏，都把真实的物理数据写到屏幕上！
+            document.getElementById("inspect-hex").innerText = res.hex_dump || res.error;
+            document.getElementById("inspect-text").innerText = res.text_preview || "解析失败";
+            
+            if (!res.success) {
+                // 如果是坏道，用刺眼的红色显示这些真实的乱码！
+                document.getElementById("inspect-hex").style.color = "#f44336"; 
+                document.getElementById("inspect-text").style.color = "#f44336";
             } else {
-                document.getElementById("inspect-hex").innerText = "物理读取失败: " + res.error;
+                // 正常的块用健康的绿色和青色
+                document.getElementById("inspect-hex").style.color = "#50fa7b"; 
+                document.getElementById("inspect-text").style.color = "#8be9fd";
             }
         });
 
@@ -648,8 +667,18 @@ document.getElementById("btn-damage-selected-block").addEventListener("click", a
     let targetDisk = document.getElementById("map-disk-target").value;
     if (confirm(`🚨 物理砸坏警告：\n确定要砸坏磁盘 ${targetDisk} 的 Block ${blockNo} 吗？`)) {
         let result = await eel.gui_damage_block(blockNo, targetDisk)();
-        if (result.success) renderDiskMap();
-        else alert("损坏注入失败: " + result.error);
+        if (result.success) {
+            alert(`[+] 成功物理覆写损坏 Block ${blockNo}！`);
+            renderDiskMap(); 
+            // 💡 修复：强行重新模拟点击该物理块，让右侧瞬间读出我们刚才写入的 DEADBEEF 乱码！
+            setTimeout(() => {
+                let startBlock = parseInt(document.getElementById("map-page-start").value) || 0;
+                let blocks = document.querySelectorAll(".disk-block");
+                if(blocks[blockNo - startBlock]) blocks[blockNo - startBlock].click();
+            }, 200);
+        } else {
+            alert("损坏注入失败: " + result.error);
+        }
     }
 });
 

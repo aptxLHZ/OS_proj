@@ -1,5 +1,6 @@
 import struct
 import os
+import sys
 
 DATA_DIR = "data"
 DISK_A = os.path.join(DATA_DIR, "disk_A.bin")
@@ -218,43 +219,60 @@ def load_free_list():
     
 
 def sync_format_all():
-    """同时初始化并格式化所有盘，确保 RAID-1 状态一致"""
+    """同时初始化并格式化所有盘，确保 RAID-1 状态一致 (重置内存所有脏状态)"""
+    global disk_a_healthy, disk_b_healthy, damaged_blocks_a, damaged_blocks_b
+    import sys
+    disk_a_healthy = True
+    disk_b_healthy = True
+    damaged_blocks_a.clear()
+    if hasattr(sys.modules[__name__], 'damaged_blocks_b'):
+        damaged_blocks_b.clear()
+        
     disks = [DISK_A, DISK_B]
     for disk in disks:
-        init_virtual_disk(disk, force=True) # 强制初始化，覆盖原有数据
+        init_virtual_disk(disk, force=True) # 物理全盘清零 [11]
         format_disk(disk)
-    load_free_list()     
-    # 初始化内存中的管理结构
+        
+    load_free_list() 
     init_inode_stack()
-    save_superblock()
-    print("[+] 所有虚拟磁盘已完成 RAID-1 同步格式化。")
-    
-    
+    save_superblock() 
+    print("[+] 所有虚拟磁盘已完成『物理级』同步格式化并清空内存状态。")
+  
 def write_block(block_no, data):
-    """物理写盘块：支持 RAID-1 双盘智能双写"""
-    global disk_a_healthy, disk_b_healthy,damaged_blocks_a
+    """物理写盘块：支持 RAID-1 双盘智能双写与对称坏道拦截"""
+    global disk_a_healthy, disk_b_healthy, damaged_blocks_a, damaged_blocks_b
+    
+    written_a = False
+    written_b = False
+    
     # 写入 A 盘
     if disk_a_healthy and (block_no not in damaged_blocks_a):
         try:
             with open(DISK_A, "r+b") as f:
                 f.seek(block_no * BLOCKSIZ)
                 f.write(data)
+                written_a = True
         except Exception:
             disk_a_healthy = False
-            print("[!] 警报：物理磁盘 A 突发写入异常，已被迫降级运行！")
+            
     # 写入 B 盘
-    if disk_b_healthy:
+    if disk_b_healthy and (block_no not in damaged_blocks_b):
         try:
             with open(DISK_B, "r+b") as f:
                 f.seek(block_no * BLOCKSIZ)
                 f.write(data)
+                written_b = True
         except Exception:
             disk_b_healthy = False
-            print("[!] 警报：物理磁盘 B 突发写入异常，已被迫降级运行！")
+            
+    # 💡 核心防护：如果该物理盘块在 A、B 双盘上全部损坏，直接在底层抛出致命写入错误！
+    if not written_a and not written_b:
+        raise Exception("致命灾难：磁盘 A 与 B 的对应物理盘块均已损坏，数据写入失败！")
 
 def read_block(block_no):
-    """物理读盘块：实现无缝的热插拔/磁盘损坏自动降级切换"""
-    global disk_a_healthy, disk_b_healthy
+    """物理读盘块：实现无缝的热插拔/磁盘损坏自动降级切换 (带双盘对称坏道防御)"""
+    global disk_a_healthy, disk_b_healthy, damaged_blocks_a, damaged_blocks_b
+    
     # 1. 尝试从 A 盘读取
     if disk_a_healthy and (block_no not in damaged_blocks_a):
         try:
@@ -262,11 +280,11 @@ def read_block(block_no):
                 f.seek(block_no * BLOCKSIZ)
                 return f.read(BLOCKSIZ)
         except Exception:
-            # 💡 A 盘发生物理读取异常，标记其为不健康
             disk_a_healthy = False
             print("[!] 警告：物理磁盘 A 故障！系统自动无缝切换到备份磁盘 B ...")
-    # 2. 如果 A 盘坏了，或者 A 盘在前面报错了，自动从 B 盘读取数据
-    if disk_b_healthy:
+            
+    # 2. 从 B 盘读取 (A 坏了，或者 A 有坏道)
+    if disk_b_healthy and (block_no not in damaged_blocks_b):
         try:
             with open(DISK_B, "rb") as f:
                 f.seek(block_no * BLOCKSIZ)
@@ -274,8 +292,10 @@ def read_block(block_no):
         except Exception:
             disk_b_healthy = False
             raise Exception("物理灾难：双盘全部损坏，数据丢失！")
-    raise Exception("物理灾难：无任何可用健康的磁盘介质！")
-
+            
+    # 💡 如果 A、B 两个对应的物理盘块全部遭遇损坏，触发硬件级彻底丢失警报！
+    raise Exception("物理灾难：主盘与备盘的对应盘块均已严重损坏，数据彻底丢失无法读取！")
+  
 def save_superblock():
     """【物理保存】：将内存中的超级块状态，持久化写入 A/B 双盘的 Block 1"""
     global super_block_memory
@@ -314,9 +334,9 @@ def load_superblock():
 def reconstruct_disk_a_from_b():
     """【RAID-1 物理重构 - 高效流式版】：一次性流式复制，解决句柄开销瓶颈"""
     global disk_a_healthy, disk_b_healthy
-    
-    if not disk_b_healthy:
-        raise Exception("重构失败：备份磁盘 B 也已损坏，无法进行数据同步！")
+    damaged_b = getattr(sys.modules[__name__], 'damaged_blocks_b', set()) if 'sys' in globals() else set()
+    if not disk_b_healthy or len(damaged_b) > 0:
+        raise Exception("致命灾难：备份磁盘 B 存在物理坏道或已下线，无法作为安全的镜像源进行重构恢复！系统数据已面临永久丢失风险！")
         
     print("[*] 正在进行 RAID-1 物理数据重构 (Disk B -> Disk A) ...")
     
