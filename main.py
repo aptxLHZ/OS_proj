@@ -535,30 +535,74 @@ def gui_create_file(filename):
 
 @eel.expose
 def gui_get_disk_map(start_block=0, target_disk="A"):
-    """【防崩溃保护版】：获取指定磁盘前 512 个物理盘块的真实占用状态"""
+    """【高级多级索引自检测版】：获取指定磁盘前 512 个物理盘块的真实占用状态"""
     try: start_block = int(start_block)
     except: start_block = 0
         
     total_visual_blocks = 512
     disk_map = ["free"] * total_visual_blocks
     
+    # 1. 标记系统保留区
     for i in range(total_visual_blocks):
         phys_no = start_block + i
         if phys_no == 0: disk_map[i] = "boot"
         elif phys_no == 1: disk_map[i] = "super"
         elif 2 <= phys_no <= 33: disk_map[i] = "inode"
         
+    # 2. 💡 深度核心重构：扫描所有 512 个 Inode，进行直接/间接物理地址多层扫描
     try:
         from kernel import get_inode
+        from disk_core import read_block, BLOCKSIZ
+        import struct
+        
         for ino in range(512):
             inode_info = get_inode(ino)
-            if inode_info[0] != 0:
-                for block in inode_info[5:15]:
+            mode = inode_info[0]
+            if mode != 0: # Inode 处于分配状态
+                # a. 扫描直接寻址区 addr[0] ~ addr[7] (元组索引 5 到 12)
+                for block in inode_info[5:13]:
                     if block != 0 and start_block <= block < start_block + total_visual_blocks:
                         disk_map[block - start_block] = "data"
+                        
+                # b. 扫描一次间接寻址区 addr[8] (元组索引 13)
+                ind1_block = inode_info[13]
+                if ind1_block != 0:
+                    if start_block <= ind1_block < start_block + total_visual_blocks:
+                        disk_map[ind1_block - start_block] = "data" # 标记间址块本身
+                    # 读出一次间址块，扫描其内部记录的 256 个子盘块
+                    try:
+                        ind1_data = read_block(ind1_block)
+                        for j in range(0, BLOCKSIZ, 2):
+                            sub_block = struct.unpack('H', ind1_data[j:j+2])[0]
+                            if sub_block != 0 and start_block <= sub_block < start_block + total_visual_blocks:
+                                disk_map[sub_block - start_block] = "data"
+                    except Exception: pass
+                    
+                # c. 扫描二次间接寻址区 addr[9] (元组索引 14)
+                ind2_block = inode_info[14]
+                if ind2_block != 0:
+                    if start_block <= ind2_block < start_block + total_visual_blocks:
+                        disk_map[ind2_block - start_block] = "data" # 标记二次间址块本身
+                    # 读出二次间址块，遍历里面的一级子间址指针
+                    try:
+                        ind2_data = read_block(ind2_block)
+                        for j in range(0, BLOCKSIZ, 2):
+                            sub_ind1 = struct.unpack('H', ind2_data[j:j+2])[0]
+                            if sub_ind1 != 0:
+                                if start_block <= sub_ind1 < start_block + total_visual_blocks:
+                                    disk_map[sub_ind1 - start_block] = "data" # 标记一级子间址块
+                                # 深度递归读取数据块
+                                try:
+                                    sub_ind1_data = read_block(sub_ind1)
+                                    for k in range(0, BLOCKSIZ, 2):
+                                        sub_sub_block = struct.unpack('H', sub_ind1_data[k:k+2])[0]
+                                        if sub_sub_block != 0 and start_block <= sub_sub_block < start_block + total_visual_blocks:
+                                            disk_map[sub_sub_block - start_block] = "data"
+                                except Exception: pass
+                    except Exception: pass
     except Exception: pass
         
-    # 💡 根据查看的是 A 盘还是 B 盘，渲染特定的红块！
+    # 3. 根据查看的是 A 盘还是 B 盘，精准渲染损坏坏道！
     try:
         import disk_core
         damaged_set = disk_core.damaged_blocks_a if target_disk == "A" else getattr(disk_core, "damaged_blocks_b", set())

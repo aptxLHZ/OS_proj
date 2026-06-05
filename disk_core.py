@@ -121,8 +121,8 @@ def format_disk(filename):
     """初始化磁盘：建立成组链接结构"""
     print(f"[*] 正在为 {filename} 进行格式化布局...")
     
-    # 物理块范围: 34 到 20479 (前34块为保留区)
-    all_blocks = list(range(34, 20480))
+    # 物理块范围: 35 到 20479 (前35块为保留区)
+    all_blocks = list(range(35, 20480))
     
     # 逆向遍历，每50个一组，构建链表
     # 每一组的第一个块存放下一组的块号和计数
@@ -204,10 +204,10 @@ def init_inode_stack():
 def load_free_list():
     """从磁盘读取第一组空闲块到内存超级块栈"""
     global super_block_memory
-    # 我们规定第一组信息写在 34 号块（数据区第一个块）或者最后一组块
+    # 我们规定第一组信息写在 35 号块（数据区第一个块）或者最后一组块
     # 按照 format_disk 的逻辑，第一组空闲块号数据在某个位置
-    # 为了简单，我们强制加载包含空闲块的第一组数据块 (比如 34 号块)
-    data = read_block(34) 
+    # 为了简单，我们强制加载包含空闲块的第一组数据块 (比如 35 号块)
+    data = read_block(35) 
     # 解析: 前4字节是count，后面是块号
     import struct
     count = struct.unpack('I', data[0:4])[0]

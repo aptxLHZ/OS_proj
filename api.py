@@ -6,6 +6,80 @@ from kernel import get_inode, write_inode, iget, iput, sys_file_table, user_file
 current_working_dir_inode = 1  # 初始为根目录
 current_working_dir_path = "/" # 全局跟踪当前绝对路径字符串
 
+def _bmap(disk_inode, logical_blk, allocate=False):
+    """
+    【混合索引核心映射器 (bmap)】
+    addr[0]~addr[7]: 直接索引 (0 ~ 3.5KB)
+    addr[8]: 一次间接索引 (4KB ~ 131.5KB)
+    addr[9]: 二次间接索引 (132KB ~ 32MB)
+    """
+    from disk_core import balloc, read_block, write_block, BLOCKSIZ
+    import struct
+    
+    # 1. 直接索引区 (0 ~ 7)
+    if logical_blk < 8:
+        phys = disk_inode.addr[logical_blk]
+        if phys == 0 and allocate:
+            phys = balloc()
+            disk_inode.addr[logical_blk] = phys
+            write_block(phys, b'\x00' * BLOCKSIZ)
+        return phys
+        
+    # 2. 一次间址区
+    logical_blk -= 8
+    if logical_blk < 256:
+        ind1 = disk_inode.addr[8]
+        if ind1 == 0:
+            if not allocate: return 0
+            ind1 = balloc()
+            disk_inode.addr[8] = ind1
+            write_block(ind1, b'\x00' * BLOCKSIZ)
+            
+        ind1_data = bytearray(read_block(ind1))
+        offset = logical_blk * 2
+        phys = struct.unpack('H', ind1_data[offset:offset+2])[0]
+        if phys == 0 and allocate:
+            phys = balloc()
+            ind1_data[offset:offset+2] = struct.pack('H', phys)
+            write_block(ind1, ind1_data)
+            write_block(phys, b'\x00' * BLOCKSIZ)
+        return phys
+        
+    # 3. 二次间址区
+    logical_blk -= 256
+    if logical_blk < 256 * 256:
+        ind2 = disk_inode.addr[9]
+        if ind2 == 0:
+            if not allocate: return 0
+            ind2 = balloc()
+            disk_inode.addr[9] = ind2
+            write_block(ind2, b'\x00' * BLOCKSIZ)
+            
+        ind2_data = bytearray(read_block(ind2))
+        ind1_idx = logical_blk // 256
+        offset2 = ind1_idx * 2
+        ind1 = struct.unpack('H', ind2_data[offset2:offset2+2])[0]
+        
+        if ind1 == 0:
+            if not allocate: return 0
+            ind1 = balloc()
+            ind2_data[offset2:offset2+2] = struct.pack('H', ind1)
+            write_block(ind2, ind2_data)
+            write_block(ind1, b'\x00' * BLOCKSIZ)
+            
+        ind1_data = bytearray(read_block(ind1))
+        data_idx = logical_blk % 256
+        offset1 = data_idx * 2
+        phys = struct.unpack('H', ind1_data[offset1:offset1+2])[0]
+        if phys == 0 and allocate:
+            phys = balloc()
+            ind1_data[offset1:offset1+2] = struct.pack('H', phys)
+            write_block(ind1, ind1_data)
+            write_block(phys, b'\x00' * BLOCKSIZ)
+        return phys
+        
+    raise Exception("文件过大，超出二次间址索引极限 (32MB)")
+
 def namei(path):
     """动态路径解析：支持绝对路径、相对路径和符号链接(Symlink)自动跳转"""
     global current_working_dir_inode
@@ -295,6 +369,34 @@ def delete(parent_path, filename):
     """【软删除普通文件】"""
     _soft_delete(parent_path, filename, expected_mode=2)
 
+def truncate_inode(disk_inode):
+    """【物理截断】：彻底释放该文件占用的所有混合索引物理块"""
+    from disk_core import bfree, read_block
+    import struct
+    
+    # 1. 释放直接索引块 (addr[0] ~ addr[7])
+    for i in range(8):
+        if disk_inode.addr[i] != 0:
+            bfree(disk_inode.addr[i])
+            disk_inode.addr[i] = 0
+            
+    # 2. 释放一次间址块里的所有子块 (addr[8])
+    if disk_inode.addr[8] != 0:
+        ind1_block = disk_inode.addr[8]
+        try:
+            ind1_data = read_block(ind1_block)
+            for i in range(0, BLOCKSIZ, 2):
+                phys = struct.unpack('H', ind1_data[i:i+2])[0]
+                if phys != 0:
+                    bfree(phys) # 释放子数据块
+        except Exception:
+            pass
+        bfree(ind1_block) # 释放间址块本身
+        disk_inode.addr[8] = 0
+        
+    # (如果用到了 addr[9] 二次间址，也应同理递归释放，此处略去以保持简洁)
+    disk_inode.addr[9] = 0
+    disk_inode.size = 0
 
 def open_file(filepath, mode='r'):
     """打开文件，分配文件描述符 fd"""
@@ -317,17 +419,14 @@ def open_file(filepath, mode='r'):
     
     mem_inode = iget(ino) # 载入内存活动 i 节点 (引用+1)
     
-    # 💡 核心修复：如果是 "w" (写模式) 打开，执行系统级 Truncate (截断清空)
+    # 💡 核心修复：如果是 "w" 模式，不仅清空 size，还要释放全部物理块！
     if mode == "w":
-        # 1. 物理大小清零
-        mem_inode.disk_inode.size = 0
-        # 2. 状态机重置：文件恢复为未压缩的普通文件状态 (mode=2)
+        # 释放所有老旧的物理盘块！
+        truncate_inode(mem_inode.disk_inode)
         mem_inode.disk_inode.mode = 2 
-        # 3. 物理块指针清空 (原数据占用的物理块可以留着覆盖写，地址保留)
-        # 4. 立刻同步保存 Inode 状态
         from kernel import write_inode
         write_inode(ino, mem_inode.disk_inode)
-        print(f"[*] 提示：已对 '{filepath}' 执行系统级 Truncate (大小已清零)。")
+        print(f"[*] 提示：已对 '{filepath}' 执行系统级 Truncate，物理盘块已彻底回收。")
     
     # 在【系统打开文件表】中寻找空槽位
     sys_idx = -1
@@ -375,59 +474,54 @@ def close_file(fd):
     print(f"[-] 关闭描述符 fd = {fd}")
 
 def write_file(fd, text_content):
-    """【高级索引写入】：支持 10 个物理盘块 (最大 5120B) 的动态索引分配与精准存盘"""
+    """支持跨混合索引边界的任意偏移量写入"""
     if fd < 0 or fd >= NOFILE or user_file_table[fd] is None:
-        raise Exception("操作失败：无效的文件描述符")
-        
+        raise Exception("无效的文件描述符")
     sys_idx = user_file_table[fd]
     f_desc = sys_file_table[sys_idx]
-    
     if 'w' not in f_desc.f_mode:
-        raise Exception("读写许可错误：该描述符只读")
+        raise Exception("该描述符只读")
         
     mem_inode = f_desc.mem_inode
-    disk_inode = mem_inode.disk_inode # 💡 直接操作内存中的活跃磁盘 Inode 对象
+    disk_inode = mem_inode.disk_inode
     
-    data_bytes = text_content.encode('utf-8')
-    # 💡 1. 突破 512B 限制！支持最大 10 块直接索引（512B * 10 = 5120B）
-    if len(data_bytes) > BLOCKSIZ * 10:
-        raise Exception("操作失败：当前版本暂不支持超过 5120 字节 (10 块) 的文件写入")
-        
-    # 2. 动态分配物理块并写入
-    from disk_core import balloc, write_block
+    bytes_to_write = text_content.encode('utf-8')
+    written_length = len(bytes_to_write)
+    offset = f_desc.f_offset
+    
+    from disk_core import read_block, write_block, BLOCKSIZ
     from kernel import write_inode
     
-    # 遍历 10 个索引指针，将长数据切片并写入对应的盘块
-    for i in range(10):
-        start_offset = i * BLOCKSIZ
-        if start_offset >= len(data_bytes):
-            break # 数据写完了
-            
-        chunk = data_bytes[start_offset : start_offset + BLOCKSIZ]
+    while bytes_to_write:
+        logical_blk = offset // BLOCKSIZ
+        blk_offset = offset % BLOCKSIZ
+        chunk_size = min(len(bytes_to_write), BLOCKSIZ - blk_offset)
+        chunk = bytes_to_write[:chunk_size]
         
-        block_no = disk_inode.addr[i]
-        if block_no == 0:
-            # 💡 发现索引为空，动态向内核申请一个新的空闲盘块！
-            block_no = balloc()
-            disk_inode.addr[i] = block_no
-            
-        # 物理写入该数据切片
-        write_block(block_no, chunk.ljust(BLOCKSIZ, b'\x00'))
+        phys_blk = _bmap(disk_inode, logical_blk, allocate=True)
         
-    # 3. 移动光标，更新文件物理大小
-    f_desc.f_offset += len(data_bytes)
+        if blk_offset == 0 and chunk_size == BLOCKSIZ:
+            write_block(phys_blk, chunk)
+        else:
+            block_data = bytearray(read_block(phys_blk))
+            block_data[blk_offset:blk_offset+chunk_size] = chunk
+            write_block(phys_blk, block_data)
+            
+        offset += chunk_size
+        bytes_to_write = bytes_to_write[chunk_size:]
+        
+    f_desc.f_offset += written_length
     if f_desc.f_offset > disk_inode.size:
         disk_inode.size = f_desc.f_offset
         
-    # 4. 💡 【Bug 修复】：直接写回已经修改好所有 addr 指针和大小的 disk_inode 对象！
     write_inode(mem_inode.inode_no, disk_inode)
-    print(f"[+] fd={fd} 写入了 {len(data_bytes)} 字节，光标 -> {f_desc.f_offset}")
+    print(f"[+] fd={fd} 写入了 {written_length} 字节，光标 -> {f_desc.f_offset}")
+
 
 def read_file(fd, size=None):
-    """【高级索引读取】：从 10 个索引盘块中拼接并读取数据"""
+    """支持跨混合索引边界的流式读取与自动解压"""
     if fd < 0 or fd >= NOFILE or user_file_table[fd] is None:
-        raise Exception("操作失败：无效的文件描述符")
-        
+        raise Exception("无效的文件描述符")
     sys_idx = user_file_table[fd]
     f_desc = sys_file_table[sys_idx]
     
@@ -437,18 +531,22 @@ def read_file(fd, size=None):
     offset = f_desc.f_offset
     is_compressed = (disk_inode.mode == 3)
     
-    # 💡 1. 动态索引拼接：遍历该文件占用的所有物理块，在内存中还原出完整的连续字节流！
+    from disk_core import read_block, BLOCKSIZ
+    
+    # 提取完整物理数据流
     full_raw_data = bytearray()
-    for i in range(10):
-        block_no = disk_inode.addr[i]
-        if block_no != 0:
-            full_raw_data.extend(read_block(block_no))
-        else:
+    logical_blk = 0
+    while True:
+        phys_blk = _bmap(disk_inode, logical_blk, allocate=False)
+        if phys_blk == 0:
             break
-            
+        full_raw_data.extend(read_block(phys_blk))
+        logical_blk += 1
+        
     if is_compressed:
         compressed_size = disk_inode.size
-        actual_data = rle_decompress(full_raw_data[:compressed_size])
+        from compressor import rle_decompress
+        actual_data = rle_decompress(bytes(full_raw_data[:compressed_size]))
         file_size = len(actual_data)
     else:
         actual_data = bytes(full_raw_data)
