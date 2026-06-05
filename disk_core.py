@@ -80,80 +80,95 @@ def init_virtual_disk(filename, num_blocks=20480, force=False):
         f.write(superblock_data)
 
 def balloc():
-    """分配一个物理盘块"""
-    global super_block_memory
+    """【成组链接分配器】：动态弹栈。当栈空时，物理读入组长盘块以载入下一组信息"""
+    global super_block_memory, disk_a_healthy, disk_b_healthy, superblock_dirty
     
     if super_block_memory['nfree'] == 0:
-        raise Exception("磁盘已满")
+        raise Exception("物理灾难：磁盘空间已完全耗尽！无空闲盘块。")
         
-    # 弹出栈顶
+    # 1. 弹栈
     super_block_memory['nfree'] -= 1
     block_no = super_block_memory['free'][super_block_memory['nfree']]
     
-    # 如果弹出后栈空了，说明这是最后一个元素，它是下一组的链表块地址
+    # 2. 💡 核心设计：如果分配的是当前栈里的最后一个块，它在物理上就是下一组的“组长块”！
     if super_block_memory['nfree'] == 0:
-        # 这里模拟读取下一组信息 (实际应调用 read_block 函数)
-        # print(f"正在从物理块 {block_no} 加载下一组空闲块...")
-        # 实际开发中，这里要调用 read_block(block_no) 并更新 super_block_memory
-        pass
-    # save_superblock()
-    global superblock_dirty
+        print(f"[*] 栈空，正在从组长块 {block_no} 中物理加载下一组空闲块号...")
+        # 物理读出该组长块里保存的下一组空闲链数据
+        data = read_block(block_no)
+        
+        # 解包前 4 字节获取下一组的块数
+        count = struct.unpack('I', data[0:4])[0]
+        if count > 0:
+            # 读出剩余的块号，重新填满超级块空闲栈
+            blocks = struct.unpack('I' * count, data[4 : 4 + 4 * count])
+            super_block_memory['nfree'] = count
+            super_block_memory['free'][:count] = list(blocks)
+            print(f"[+] 成功跨越组界！从组长块中加载了 {count} 个新空闲块，当前可用: {super_block_memory['nfree']}")
+        else:
+            # 物理空闲块真正彻底耗尽
+            super_block_memory['nfree'] = 0
+            
     superblock_dirty = True
-    
+    save_superblock()
     return block_no
 
 def bfree(block_no):
-    """回收一个物理盘块"""
-    global super_block_memory
+    """【成组链接回收器】：动态压栈。当栈满时，将当前栈打包写回 block_no 作新的组长块"""
+    global super_block_memory, superblock_dirty
     
+    # 💡 核心设计：如果内存栈已满 (50个)，必须将当前栈内容写入即将回收的块中，作为新的“组长块”！
     if super_block_memory['nfree'] == 50:
-        # 栈满了，将当前栈内容写入 block_no，然后重置栈
-        # print(f"栈满，将当前栈存入块 {block_no}")
-        super_block_memory['nfree'] = 0
+        print(f"[*] 超级块空闲栈满(50个)，正在将当前栈数据打包写回物理块 {block_no} 作新组长块...")
+        count = super_block_memory['nfree']
+        data = struct.pack('I', count)
+        for b in super_block_memory['free'][:count]:
+            data += struct.pack('I', b)
+            
+        # 写入物理磁盘块 [17]
+        write_block(block_no, data.ljust(BLOCKSIZ, b'\x00'))
         
-    super_block_memory['free'][super_block_memory['nfree']] = block_no
-    super_block_memory['nfree'] += 1
-    # save_superblock()
-    global superblock_dirty
+        # 重置超级块栈，使其只包含这一个新组长块
+        super_block_memory['nfree'] = 1
+        super_block_memory['free'][0] = block_no
+    else:
+        # 栈未满，直接压栈
+        super_block_memory['free'][super_block_memory['nfree']] = block_no
+        super_block_memory['nfree'] += 1
+        
     superblock_dirty = True
+    save_superblock()
 
 def format_disk(filename):
-    """初始化磁盘：建立成组链接结构"""
-    print(f"[*] 正在为 {filename} 进行格式化布局...")
+    """【标准 UNIX 成组链接格式化】：每个组长块在磁盘上存储下一组的全部块号"""
+    print(f"[*] 正在为 {filename} 进行物理格式化布局...")
     
-    # 物理块范围: 35 到 20479 (前35块为保留区)
+    # 物理空闲块：35 到 20479 (安全剔除保留区)
     all_blocks = list(range(35, 20480))
     
-    # 逆向遍历，每50个一组，构建链表
-    # 每一组的第一个块存放下一组的块号和计数
-    last_block_in_group = 0 # 最开始没有下一组，设为0
-    
-    # 将所有块分成 50 个一组
+    # 将所有空闲块切分为 50 个一组
     groups = [all_blocks[i:i + 50] for i in range(0, len(all_blocks), 50)]
     
     with open(filename, 'r+b') as f:
-        for group in reversed(groups):
-            # 准备该组的数据:[计数, 块号1, 块号2, ..., 块号49, 下一组指针]
-            # 这里简化逻辑: 存储格式为: count(4字节) + block_nos(49*4字节) + next_group_ptr(4字节)
-            count = len(group)
+        # 最后一组写入 0 (代表无下一组，链表终点)
+        next_group_data = struct.pack('I', 0) + b'\x00' * 508
+        
+        # 💡 从后往前遍历：每一组的组长块写入【下一组】的块信息！
+        for i in range(len(groups) - 1, -1, -1):
+            current_group = groups[i]
+            leader_block = current_group[0] # 组长物理块号
             
-            # 打包当前组数据
-            data = struct.pack('I', count)
-            for b in group:
-                data += struct.pack('I', b)
-            data += struct.pack('I', last_block_in_group)
+            # 将下一组的指针链数据写入当前组长块的物理扇区
+            f.seek(leader_block * BLOCKSIZ)
+            f.write(next_group_data)
             
-            # 如果是最后一组（物理上最靠后的组），写入磁盘
-            # 注意：实际 UNIX 中每组的第一个块存下一组指针
-            # 为了简化，我们把当前组的信息写入组内第一个块
-            f.seek(group[0] * BLOCKSIZ)
-            f.write(data.ljust(BLOCKSIZ, b'\x00'))
+            # 为前一个组长块准备数据：当前组的大小 + 当前组的所有成员块号
+            count = len(current_group)
+            next_group_data = struct.pack('I', count)
+            for b in current_group:
+                next_group_data += struct.pack('I', b)
+            next_group_data = next_group_data.ljust(BLOCKSIZ, b'\x00')
             
-            last_block_in_group = group[0]
-            
-    # 最后，将第一组的信息载入超级块 (Block 1)
-    # 此处省略：实际应从 last_block_in_group 读取第一组数据载入内存
-    print(f"[+] {filename} 格式化完毕，成组链接链表构建完成。")
+    print(f"[+] {filename} 格式化完毕，标准成组链接链表构建完成。")
         
 def ialloc():
     """分配一个空的 i 节点"""
@@ -201,21 +216,14 @@ def init_inode_stack():
     print("[+] i 节点空闲栈已初始化 (预留了 Inode 0 和 1)。")
     
     
-def load_free_list():
-    """从磁盘读取第一组空闲块到内存超级块栈"""
+def init_free_list():
+    """【内存挂载】：将第一组空闲块直接加载入内存超级块栈中"""
     global super_block_memory
-    # 我们规定第一组信息写在 35 号块（数据区第一个块）或者最后一组块
-    # 按照 format_disk 的逻辑，第一组空闲块号数据在某个位置
-    # 为了简单，我们强制加载包含空闲块的第一组数据块 (比如 35 号块)
-    data = read_block(35) 
-    # 解析: 前4字节是count，后面是块号
-    import struct
-    count = struct.unpack('I', data[0:4])[0]
-    blocks = struct.unpack('I'*count, data[4:4+4*count])
-    
-    super_block_memory['nfree'] = count
-    super_block_memory['free'][:count] = list(blocks)
-    print(f"[+] 磁盘空闲块链表已加载到内存，当前可用块数: {count}")
+    # 第一组：35 到 84 (共 50 个空闲块)
+    first_group = list(range(35, 85)) 
+    super_block_memory['nfree'] = len(first_group)
+    super_block_memory['free'][:len(first_group)] = first_group
+    print(f"[+] 内存超级块空闲栈初始化完毕，当前可用块数: {len(first_group)}")
     
 
 def sync_format_all():
@@ -233,7 +241,7 @@ def sync_format_all():
         init_virtual_disk(disk, force=True) # 物理全盘清零 [11]
         format_disk(disk)
         
-    load_free_list() 
+    init_free_list() 
     init_inode_stack()
     save_superblock() 
     print("[+] 所有虚拟磁盘已完成『物理级』同步格式化并清空内存状态。")
