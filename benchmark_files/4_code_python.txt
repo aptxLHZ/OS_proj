@@ -1,0 +1,17 @@
+def test():
+    print('hello')
+    return True
+class MyClass:
+    def __init__(self):
+        self.val = 0
+def test():
+    print('hello')
+    return True
+class MyClass:
+    def __init__(self):
+        self.val = 0
+def test():
+    print('hello')
+    return True
+class MyClass:
+    def __init__(self):

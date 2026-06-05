@@ -14,6 +14,7 @@ from api import (
 )
 import getpass
 import eel
+import benchmark
 
 open_fds = {} #记录当前的用户打开的文件句柄字典 {fd: filepath}
 def inject_crash():
