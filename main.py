@@ -844,7 +844,35 @@ def gui_decode_hex(hex_string, struct_type):
             res += f"  - 本组物理盘块号 : {blocks}\n"
             res += f"  - 下一组组长指针 : {next_leader if next_leader != 0 else '0 (链表终点 EOF)'}\n"
             return {"success": True, "result": res}
+        
+        elif struct_type == "index":
+            # 💡 间接索引块解析：每 2 个字节代表一个物理块号指针
+            res = f"🔮 【解析结果：间接索引块 (Indirect Block)】\n"
+            res += f"  (自动过滤空指针，仅显示已分配的物理块号)\n"
+            res += f" {'='*45}\n"
             
+            valid_count = 0
+            # 以 2 字节为一个单位进行步进扫描
+            for i in range(0, len(raw_bytes), 2):
+                if i + 2 > len(raw_bytes):
+                    break
+                
+                # 'H' 代表 unsigned short (2 字节小端序)
+                phys_block = struct.unpack('H', raw_bytes[i : i+2])[0]
+                
+                if phys_block != 0:
+                    ptr_index = i // 2
+                    res += f"  📌 指针槽位 [{ptr_index:<3}] ──指向──> 📦 物理块号: {phys_block}\n"
+                    valid_count += 1
+                    
+            if valid_count == 0:
+                res += "  (该索引块全为空，无任何有效地址指针)\n"
+            else:
+                res += f" {'-'*45}\n"
+                res += f"  总计有效指针数: {valid_count} 个"
+                
+            return {"success": True, "result": res}
+        
     except Exception as e:
         return {"success": False, "error": str(e)}
 
