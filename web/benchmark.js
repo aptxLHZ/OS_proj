@@ -47,6 +47,10 @@ async function runSingleTest(testNum) {
         let res = await eel.run_benchmark_project_4()();
         appendLog(res);
     }
+    // 💡 核心修复：跑分结束后，如果资源管理器是开着的，强行触发它刷新画面！
+    if (document.getElementById("win-file-manager").style.display !== "none") {
+        loadFiles();
+    }
 }
 
 // ----------------- 一键完整测试 (按顺序自动执行) -----------------

@@ -70,7 +70,7 @@ def boot_login():
 def daemon_flush_thread():
     """💡 模拟内核的 pdflush 线程：每 2 秒将内存超级块同步回物理磁盘"""
     while True:
-        time.sleep(2)
+        time.sleep(100)
         if disk_core.superblock_dirty:
             disk_core.save_superblock()
             disk_core.superblock_dirty = False
@@ -336,40 +336,48 @@ def get_kernel_info():
 
 @eel.expose
 def gui_get_files():
-    """获取当前工作目录的文件列表 (返回前端可直接渲染的 JSON 数组)"""
-    import struct
-    import api
-    from disk_core import read_block, BLOCKSIZ
-    from kernel import get_inode
-    
-    current_ino = api.current_working_dir_inode
-    inode_info = get_inode(current_ino)
-    block_no = inode_info[5] 
-    dir_data = read_block(block_no)
-    
-    files = []
-    for i in range(0, BLOCKSIZ, 16):
-        ino, name = struct.unpack('H 14s', dir_data[i:i+16])
-        if ino != 0:
-            name_str = name.decode('utf-8').strip('\x00')
-            item_info = get_inode(ino)
-            mode = item_info[0]
-            size = item_info[4]
-            owner_uid = item_info[2]
-            
-            # 用户名映射
-            if owner_uid == 1: owner_name = "root"
-            elif owner_uid == 99: owner_name = "guest"
-            else: owner_name = f"usr{owner_uid-1}"
-            
-            files.append({
-                "ino": ino,
-                "name": name_str,
-                "type": "dir" if mode == 1 else ("file" if mode == 2 else "link"),
-                "size": size,
-                "owner": owner_name
-            })
-    return files
+    """【健壮版】：获取当前工作目录的文件列表，包含错误捕获和路径同步"""
+    try:
+        import struct
+        import api
+        from disk_core import read_block, BLOCKSIZ
+        from kernel import get_inode
+        
+        current_ino = api.current_working_dir_inode
+        current_path = api.current_working_dir_path
+        
+        inode_info = get_inode(current_ino)
+        block_no = inode_info[5] 
+        dir_data = read_block(block_no)
+        
+        files = []
+        for i in range(0, BLOCKSIZ, 16):
+            ino, name = struct.unpack('H 14s', dir_data[i:i+16])
+            if ino != 0:
+                name_str = name.decode('utf-8').strip('\x00')
+                item_info = get_inode(ino)
+                mode = item_info[0]
+                size = item_info[4]
+                owner_uid = item_info[2]
+                
+                # 属主映射
+                if owner_uid == 1: owner_name = "root"
+                elif owner_uid == 99: owner_name = "guest"
+                else: owner_name = f"usr{owner_uid-1}"
+                
+                files.append({
+                    "ino": ino,
+                    "name": name_str,
+                    "type": "dir" if mode == 1 else ("file" if mode == 2 else "link"),
+                    "size": size,
+                    "owner": owner_name
+                })
+                
+        # 💡 核心修复：返回结构化的数据，附带当前路径和 Inode 信息
+        return {"success": True, "files": files, "current_ino": current_ino, "current_path": current_path}
+    except Exception as e:
+        # 如果发生任何物理读取错误，将错误原因安全返回给前端展示
+        return {"success": False, "error": str(e)}
 
 @eel.expose
 def gui_chdir(dirname):
@@ -546,6 +554,9 @@ def gui_get_disk_map(start_block=0, target_disk="A"):
     # 1. 标记系统保留区
     for i in range(total_visual_blocks):
         phys_no = start_block + i
+        if phys_no >= 20480:
+            disk_map[i] = "out_of_bounds"
+            continue
         if phys_no == 0: disk_map[i] = "boot"
         elif phys_no == 1: disk_map[i] = "super"
         elif 2 <= phys_no <= 33: disk_map[i] = "inode"

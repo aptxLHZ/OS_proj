@@ -109,7 +109,7 @@ def balloc():
             super_block_memory['nfree'] = 0
             
     superblock_dirty = True
-    save_superblock()
+    # save_superblock()
     return block_no
 
 def bfree(block_no):
@@ -136,7 +136,7 @@ def bfree(block_no):
         super_block_memory['nfree'] += 1
         
     superblock_dirty = True
-    save_superblock()
+    # save_superblock()
 
 def format_disk(filename):
     """【标准 UNIX 成组链接格式化】：每个组长块在磁盘上存储下一组的全部块号"""

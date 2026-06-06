@@ -85,67 +85,71 @@ document.getElementById("close-file-manager").addEventListener("click", function
 
 // 3. 核心：从 Python 内核拉取文件列表并渲染
 async function loadFiles() {
-    updateKernelInfo(currentLoggedUser);
     let fileGrid = document.getElementById("file-grid");
-    fileGrid.innerHTML = "正在读取内核数据...";
+    fileGrid.innerHTML = "<div style='padding:20px; color:#aaa;'>🔄 正在读取内核数据...</div>";
     
-    // 调用 Python 接口获取当前目录所有文件信息
-    let files = await eel.gui_get_files()();
-    // 💡 拦截真·物理崩溃：如果双盘目录块全毁，后端会抛异常返回错误/null
-    if (!files || !Array.isArray(files)) {
-        fileGrid.innerHTML = `<div style='color:#f44336; font-weight:bold; font-size:16px; padding: 20px;'>
-            🚨 严重物理灾难：<br><br>当前目录所在的物理盘块 (双盘) 已全部严重损坏！<br>无法读取任何目录项数据！
+    let result = await eel.gui_get_files()();
+    
+    // 💡 如果后端读取报错，直接在网格里把红色错误原因打印出来！
+    if (!result || !result.success) {
+        fileGrid.innerHTML = `<div style='color:#f44336; font-weight:bold; font-size:14px; padding: 20px;'>
+            🚨 读取目录失败：<br><br>${result ? result.error : "未知后端通信错误"}
             </div>`;
         return;
     }
-    fileGrid.innerHTML = ""; // 清空
+    
+    let files = result.files;
+    fileGrid.innerHTML = ""; // 正常则清空
+    
+    // 💡 核心修复：自动精准更新资源管理器的地址栏！
+    document.getElementById("address-bar").innerText = `当前位置: ${result.current_path} (Inode ${result.current_ino})`;
     
     files.forEach(file => {
-        // 过滤掉系统隐藏的垃圾箱和 trashinfo (保持桌面清爽)
         if (file.name === ".trashinfo") return;
 
-        // 根据文件类型指定精美图标
         let icon = "📄";
-        
-        if (file.type === "dir") icon = "📁";
-            if (file.name === ".trash") icon = "🗑️";
+        if (file.name === ".trash") icon = "🗑️";
+        else if (file.type === "dir") icon = "📁";
         else if (file.type === "link") icon = "🔗";
 
         let item = document.createElement("div");
         item.className = "file-item";
-        item.innerHTML = `
-            <div class="file-icon">${icon}</div>
-            <div class="file-name">${file.name}</div>
-        `;
+        item.innerHTML = `<div class="file-icon">${icon}</div><div class="file-name">${file.name}</div>`;
         
-        // 💡 核心交互：双击事件
+        // 双击事件
         item.addEventListener("dblclick", async function() {
-            if (file.type === "dir") {
-                // 如果是文件夹，调用后台 cd 进去，并重新刷新列表！
-                let result = await eel.gui_chdir(file.name)();
-                if (result.success) {
-                    loadFiles(); // 递归刷新
-                    updateAddressBar(file.name, file.ino);
+            if (file.type === "dir" || file.type === "link") {
+                let res = await eel.gui_chdir(file.name)();
+                if (res.success) {
+                    loadFiles(); 
+                } else {
+                    // 软链接如果是文件，尝试拉起记事本
+                    let res2 = await eel.gui_read_file(file.name)();
+                    if(res2.success) {
+                        document.getElementById("editor-title").innerText = `📝 编辑 - ${file.name}`;
+                        document.getElementById("editor-textarea").value = res2.content;
+                        let win = document.getElementById("win-editor");
+                        win.style.display = "flex";
+                        bringToFront(win);
+                    } else alert(res2.error);
                 }
             } else {
                 currentSelectedFile = file.name;
                 currentFileType = file.type;
-                document.getElementById("menu-open").click();
+                document.getElementById("menu-open").click(); 
             }
         });
-
-        // 右键菜单呼出
+        
+        // 💡 右键菜单绑定
         item.addEventListener("contextmenu", function(e) {
             e.preventDefault();
             currentSelectedFile = file.name;
             currentFileType = file.type;
             
             let isTrash = document.getElementById("address-bar").innerText.includes(".trash");
-            // 💡 修复：如果在垃圾桶，隐藏移入回收站，显示还原和彻底删除
             document.getElementById("menu-restore").style.display = isTrash ? "block" : "none";
             document.getElementById("menu-hard-delete").style.display = isTrash ? "block" : "none";
             document.getElementById("menu-delete").style.display = isTrash ? "none" : "block";
-            
             document.getElementById("menu-compress").style.display = isTrash ? "none" : "block";
             document.getElementById("menu-rename").style.display = isTrash ? "none" : "block";
             document.getElementById("menu-link").style.display = isTrash ? "none" : "block";
@@ -157,10 +161,6 @@ async function loadFiles() {
         
         fileGrid.appendChild(item);
     });
-    if (document.getElementById("win-disk-map").style.display !== "none") {
-        // 如果物理图谱窗口开着，自动调用刷新
-        document.getElementById("btn-disk-map").click(); 
-    }
 }
 
 // 4. 返回上一级目录按钮
@@ -611,6 +611,7 @@ async function renderDiskMap() {
     if (damageBtn) damageBtn.style.display = "none";
     
     for (let i = 0; i < 512; i++) {
+        if (mapData[i] === "out_of_bounds") break;
         let physNo = startBlock + i;
         let box = document.createElement("div");
         box.className = "disk-block";
