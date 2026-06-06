@@ -44,6 +44,7 @@
             <!-- 工具栏：包含返回上一级按钮、地址栏和新建文件夹按钮 -->
             <div class="window-toolbar">
                 <button id="btn-go-back">⬅️ 返回</button>
+                <button id="btn-gui-refresh">🔄 刷新</button> 
                 <div id="address-bar">当前位置: Inode 1</div>
                 <button id="btn-gui-mkdir" style="background: #4CAF50; color: white;">➕ 新建文件夹</button>
                 <button id="btn-gui-create" style="background: #2196F3; color: white;">📄 新建文件</button>
@@ -219,6 +220,35 @@
             </div>
         </div>
 
+        <!-- 🔮 物理结构二进制解码分析器 -->
+        <div class="window" id="win-decoder" style="display: none; width: 620px; height: 420px; z-index: 180;">
+            <div class="window-header" style="background: rgba(0, 150, 136, 0.4);">
+                <span class="window-title">🔮 物理结构二进制解码分析器</span>
+                <div class="window-controls"><span class="win-btn win-close" id="close-decoder">×</span></div>
+            </div>
+            <div class="window-body" style="display: flex; gap: 15px; padding: 15px;">
+                <!-- 左半边：输入区 -->
+                <div style="flex: 1.2; display: flex; flex-direction: column; gap: 10px;">
+                    <textarea id="decoder-input" placeholder="请在此粘贴 16 进制字节流数据...&#10;支持带地址前缀，例如:&#10;0000 20 00 00 00 00 50 00 00 31 00..." style="flex: 1; background: #111; color: #fff; border: 1px solid #555; padding: 10px; border-radius: 5px; font-family: monospace; font-size: 11px; outline: none; resize: none;"></textarea>
+                    
+                    <div style="display: flex; gap: 10px;">
+                        <select id="decoder-type" style="flex: 1.2; background: #222; color: #fff; border: 1px solid #555; border-radius: 5px; padding: 5px; outline: none;">
+                            <option value="auto">✨ 智能自动识别</option>
+                            <option value="super">超级块 (Super Block)</option>
+                            <option value="inode">磁盘 i 节点 (Inode)</option>
+                            <option value="dir">目录项 (Directory Entry)</option>
+                            <option value="leader">成组空闲块 (Leader)</option>
+                        </select>
+                        <button id="btn-decoder-run" style="flex: 1; padding: 8px; background: #009688; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">🔍 立即解码</button>
+                    </div>
+                </div>
+                <!-- 右半边：输出解析结果 -->
+                <div style="flex: 1; background: rgba(0,0,0,0.5); border: 1px solid rgba(0, 150, 136, 0.3); border-radius: 5px; padding: 15px; overflow-y: auto;">
+                    <pre id="decoder-output" style="color: #00e676; font-family: monospace; font-size: 12px; white-space: pre-wrap; margin: 0;">等待输入数据进行反反序列化解析...</pre>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <!-- 💡 3. 底部任务栏 (默认隐藏) -->
@@ -227,6 +257,7 @@
         <div class="app-icon" id="btn-terminal">💻 系统终端</div>
         <div class="app-icon" id="btn-disk-map">📊 物理图谱</div>
         <div class="app-icon" id="btn-benchmark" style="background: rgba(156, 39, 176, 0.3); color: #e1bee7;">🚀 系统跑分</div>
+        <div class="app-icon" id="btn-decoder" style="background: rgba(0, 150, 136, 0.3); color: #b2dfdb;">🔮 结构解码</div>
         <div class="app-icon" id="btn-logout" style="background: rgba(255, 74, 74, 0.2)">🔴 注销</div>
         <!-- 💡 管理员专属工具栏，默认隐藏 -->
         <div class="app-icon" id="btn-admin-tools" style="display: none; background: rgba(255, 152, 0, 0.3); color: #ffb74d;">⚙️ 系统管理</div>

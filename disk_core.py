@@ -41,6 +41,28 @@ superblock_dirty = False
 damaged_blocks_a = set() # 记录磁盘A的物理坏道块号
 damaged_blocks_b = set() # 记录磁盘B的物理坏道块号
 
+# 💡 1. 建立全局常驻句柄池
+_file_handle_A = None
+_file_handle_B = None
+
+def get_fd_A():
+    global _file_handle_A
+    if _file_handle_A is None or _file_handle_A.closed:
+        _file_handle_A = open(DISK_A, "r+b")
+    return _file_handle_A
+
+def get_fd_B():
+    global _file_handle_B
+    if _file_handle_B is None or _file_handle_B.closed:
+        _file_handle_B = open(DISK_B, "r+b")
+    return _file_handle_B
+
+def close_all_handles():
+    """退出系统时安全关闭底层物理句柄"""
+    global _file_handle_A, _file_handle_B
+    if _file_handle_A and not _file_handle_A.closed: _file_handle_A.close()
+    if _file_handle_B and not _file_handle_B.closed: _file_handle_B.close()
+
 class DiskInode:
     def __init__(self, mode=0, nlink=0, uid=0, gid=0, size=0, addr=None):
         self.mode = mode
@@ -171,23 +193,34 @@ def format_disk(filename):
     print(f"[+] {filename} 格式化完毕，标准成组链接链表构建完成。")
         
 def ialloc():
-    """分配一个空的 i 节点"""
-    global super_block_memory
+    """分配一个空的 i 节点 (支持栈空时全盘扫描装填)"""
+    global super_block_memory, superblock_dirty
     
-    # 检查是否有空闲的 i 节点
+    if super_block_memory['nfree'] == 0:
+        raise Exception("磁盘已满") # 防止IDE误报，保留物理块耗尽检测
+        
     if super_block_memory['ninode'] == 0:
-        # 这里应该有一个从磁盘 i 节点区扫描并填充栈的逻辑
-        # 简单起见，如果栈空，先手动扫描 Block 2~33 寻找空闲节点
-        # ... (后续阶段完善扫描逻辑)
-        raise Exception("无可用 i 节点")
-    
+        # 💡 核心修复：栈空了？去扫描 512 个 Inode，把空闲的重新装满 50 个！
+        print("[*] 空闲 i 节点栈为空，正在扫描磁盘 i 节点区重新装填...")
+        from kernel import get_inode
+        for i in range(2, 512): # 0和1是系统保留，不扫描
+            try:
+                info = get_inode(i)
+                if info[0] == 0: # mode 为 0 代表空闲
+                    super_block_memory['inode'][super_block_memory['ninode']] = i
+                    super_block_memory['ninode'] += 1
+                    if super_block_memory['ninode'] == 50:
+                        break # 装满 50 个就停
+            except Exception: pass
+            
+        if super_block_memory['ninode'] == 0:
+            raise Exception("物理灾难：512 个 i 节点已彻底耗尽！")
+            
     # 从栈顶弹出一个 i 节点号
     super_block_memory['ninode'] -= 1
     inode_no = super_block_memory['inode'][super_block_memory['ninode']]
-    # save_superblock()
-    global superblock_dirty
-    superblock_dirty = True
     
+    superblock_dirty = True
     return inode_no
 
 def ifree(inode_no):
@@ -247,62 +280,53 @@ def sync_format_all():
     print("[+] 所有虚拟磁盘已完成『物理级』同步格式化并清空内存状态。")
   
 def write_block(block_no, data):
-    """物理写盘块：支持 RAID-1 双盘智能双写与对称坏道拦截"""
     global disk_a_healthy, disk_b_healthy, damaged_blocks_a, damaged_blocks_b
+    written_a = written_b = False
     
-    written_a = False
-    written_b = False
-    
-    # 写入 A 盘
     if disk_a_healthy and (block_no not in damaged_blocks_a):
         try:
-            with open(DISK_A, "r+b") as f:
-                f.seek(block_no * BLOCKSIZ)
-                f.write(data)
-                written_a = True
+            f = get_fd_A()
+            f.seek(block_no * BLOCKSIZ)
+            f.write(data)
+            # f.flush() # 交给宿主机OS自动缓冲，不强刷
+            written_a = True
         except Exception:
             disk_a_healthy = False
             
-    # 写入 B 盘
-    if disk_b_healthy and (block_no not in damaged_blocks_b):
+    if disk_b_healthy and (block_no not in getattr(sys.modules[__name__], 'damaged_blocks_b', set())):
         try:
-            with open(DISK_B, "r+b") as f:
-                f.seek(block_no * BLOCKSIZ)
-                f.write(data)
-                written_b = True
+            f = get_fd_B()
+            f.seek(block_no * BLOCKSIZ)
+            f.write(data)
+            written_b = True
         except Exception:
             disk_b_healthy = False
             
-    # 💡 核心防护：如果该物理盘块在 A、B 双盘上全部损坏，直接在底层抛出致命写入错误！
     if not written_a and not written_b:
-        raise Exception("致命灾难：磁盘 A 与 B 的对应物理盘块均已损坏，数据写入失败！")
+        raise Exception(f"致命物理灾难：双盘 Block {block_no} 均无法写入！")
 
 def read_block(block_no):
-    """物理读盘块：实现无缝的热插拔/磁盘损坏自动降级切换 (带双盘对称坏道防御)"""
-    global disk_a_healthy, disk_b_healthy, damaged_blocks_a, damaged_blocks_b
+    global disk_a_healthy, disk_b_healthy, damaged_blocks_a
     
-    # 1. 尝试从 A 盘读取
     if disk_a_healthy and (block_no not in damaged_blocks_a):
         try:
-            with open(DISK_A, "rb") as f:
-                f.seek(block_no * BLOCKSIZ)
-                return f.read(BLOCKSIZ)
+            f = get_fd_A()
+            f.seek(block_no * BLOCKSIZ)
+            return f.read(BLOCKSIZ)
         except Exception:
             disk_a_healthy = False
             print("[!] 警告：物理磁盘 A 故障！系统自动无缝切换到备份磁盘 B ...")
             
-    # 2. 从 B 盘读取 (A 坏了，或者 A 有坏道)
-    if disk_b_healthy and (block_no not in damaged_blocks_b):
+    if disk_b_healthy and (block_no not in getattr(sys.modules[__name__], 'damaged_blocks_b', set())):
         try:
-            with open(DISK_B, "rb") as f:
-                f.seek(block_no * BLOCKSIZ)
-                return f.read(BLOCKSIZ)
+            f = get_fd_B()
+            f.seek(block_no * BLOCKSIZ)
+            return f.read(BLOCKSIZ)
         except Exception:
             disk_b_healthy = False
             raise Exception("物理灾难：双盘全部损坏，数据丢失！")
             
-    # 💡 如果 A、B 两个对应的物理盘块全部遭遇损坏，触发硬件级彻底丢失警报！
-    raise Exception("物理灾难：主盘与备盘的对应盘块均已严重损坏，数据彻底丢失无法读取！")
+    raise Exception("物理灾难：无任何可用健康的磁盘介质！")
   
 def save_superblock():
     """【物理保存】：将内存中的超级块状态，持久化写入 A/B 双盘的 Block 1"""

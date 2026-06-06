@@ -1,5 +1,80 @@
 // web/app.js - 处理前端交互
 
+// --- 窗口通用拖拽与点击置顶引擎 ---
+let maxZIndex = 100;
+
+function handleTaskbarClick(btnId, winId, onLoadCallback) {
+    let btn = document.getElementById(btnId);
+    if (!btn) return;
+    
+    btn.addEventListener("click", () => {
+        let win = document.getElementById(winId);
+        
+        if (win.style.display === "none") {
+            // 💡 1. 如果窗口是关着的：打开它，并强制置顶
+            win.style.display = "flex";
+            bringToFront(win);
+            if (onLoadCallback) onLoadCallback();
+        } else {
+            // 💡 2. 如果窗口已经是开着的（不管是不是被挡住）：强制将其提升到最顶层！
+            bringToFront(win);
+        }
+    });
+}
+
+
+function makeDraggable(win) {
+    let header = win.querySelector(".window-header");
+    if (!header) return;
+
+    let posX = 0, posY = 0, mouseX = 0, mouseY = 0;
+    header.onmousedown = dragMouseDown;
+
+    // 点击窗口任意位置，使其置顶 (提高 z-index)
+    win.addEventListener("mousedown", () => {
+        maxZIndex++;
+        win.style.zIndex = maxZIndex;
+    });
+
+    function dragMouseDown(e) {
+        e = e || window.event;
+        e.preventDefault();
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+        document.onmouseup = closeDragElement;
+        document.onmousemove = elementDrag;
+    }
+
+    function elementDrag(e) {
+        e = e || window.event;
+        e.preventDefault();
+        posX = mouseX - e.clientX;
+        posY = mouseY - e.clientY;
+        mouseX = e.clientX;
+        mouseY = e.clientY;
+        // 计算新位置
+        let newTop = win.offsetTop - posY;
+        let newLeft = win.offsetLeft - posX;
+        if (newTop < 0) {
+            newTop = 0;
+        }
+        // 应用位置
+        win.style.top = newTop + "px";
+        win.style.left = newLeft + "px";
+    }
+
+    function closeDragElement() {
+        document.onmouseup = null;
+        document.onmousemove = null;
+    }
+}
+
+// 自动使桌面上所有的窗口都支持拖拽
+document.querySelectorAll(".window").forEach(makeDraggable);
+
+
+
+
 let currentLoggedUser = "guest"; // 记录当前登录用户
 
 // 绑定登录按钮点击事件
@@ -66,17 +141,9 @@ async function updateKernelInfo(username) {
 }
 
 // --- 📂 资源管理器交互逻辑 ---
-
+document.getElementById("btn-gui-refresh").addEventListener("click", loadFiles);
 // 1. 任务栏点击打开
-document.getElementById("btn-file-manager").addEventListener("click", function() {
-    let win = document.getElementById("win-file-manager");
-    win.style.display = "flex";
-    // 居中显示窗口
-    win.style.top = "15%";
-    win.style.left = "25%";
-    bringToFront(win);
-    loadFiles(); // 每次打开自动加载文件
-});
+handleTaskbarClick("btn-file-manager", "win-file-manager", loadFiles);
 
 // 2. 窗口右上角关闭按钮
 document.getElementById("close-file-manager").addEventListener("click", function() {
@@ -194,13 +261,7 @@ function updateAddressBar(name, ino) {
 // --- 💻 系统终端交互逻辑 ---
 
 // 1. 任务栏点击打开
-document.getElementById("btn-terminal").addEventListener("click", async function() {
-    let win = document.getElementById("win-terminal");
-    win.style.display = "flex";
-    win.style.top = "20%";
-    win.style.left = "30%";
-    bringToFront(win);
-    // 聚焦输入框并刷新提示符
+handleTaskbarClick("btn-terminal", "win-terminal", () => {
     document.getElementById("terminal-input").focus();
     refreshTerminalPrompt();
 });
@@ -307,50 +368,6 @@ document.getElementById("terminal-input").addEventListener("keydown", async func
     }
 });
 
-// --- 窗口通用拖拽与点击置顶引擎 ---
-let maxZIndex = 100;
-
-function makeDraggable(win) {
-    let header = win.querySelector(".window-header");
-    if (!header) return;
-
-    let posX = 0, posY = 0, mouseX = 0, mouseY = 0;
-    header.onmousedown = dragMouseDown;
-
-    // 点击窗口任意位置，使其置顶 (提高 z-index)
-    win.addEventListener("mousedown", () => {
-        maxZIndex++;
-        win.style.zIndex = maxZIndex;
-    });
-
-    function dragMouseDown(e) {
-        e = e || window.event;
-        e.preventDefault();
-        mouseX = e.clientX;
-        mouseY = e.clientY;
-        document.onmouseup = closeDragElement;
-        document.onmousemove = elementDrag;
-    }
-
-    function elementDrag(e) {
-        e = e || window.event;
-        e.preventDefault();
-        posX = mouseX - e.clientX;
-        posY = mouseY - e.clientY;
-        mouseX = e.clientX;
-        mouseY = e.clientY;
-        win.style.top = (win.offsetTop - posY) + "px";
-        win.style.left = (win.offsetLeft - posX) + "px";
-    }
-
-    function closeDragElement() {
-        document.onmouseup = null;
-        document.onmousemove = null;
-    }
-}
-
-// 自动使桌面上所有的窗口都支持拖拽
-document.querySelectorAll(".window").forEach(makeDraggable);
 
 // --- 🖱️ 右键菜单与记事本引擎 ---
 let currentSelectedFile = null;
@@ -502,13 +519,7 @@ document.getElementById("menu-link").addEventListener("click", async function() 
 
 
 // --- ⚙️ 系统管理员面板 ---
-document.getElementById("btn-admin-tools").addEventListener("click", () => {
-    let win = document.getElementById("win-admin");
-    win.style.display = "flex";
-    bringToFront(win); 
-    win.style.top = "15%"; 
-    win.style.left = "10%";
-});
+handleTaskbarClick("btn-admin-tools", "win-admin");
 document.getElementById("close-admin").addEventListener("click", () => document.getElementById("win-admin").style.display = "none");
 makeDraggable(document.getElementById("win-admin"));
 
@@ -684,14 +695,7 @@ document.getElementById("btn-damage-selected-block").addEventListener("click", a
 });
 
 // 绑定打开图谱的按钮
-document.getElementById("btn-disk-map").addEventListener("click", () => {
-    let win = document.getElementById("win-disk-map");
-    win.style.display = "flex"; 
-    win.style.top = "5%"; 
-    win.style.left = "15%"; // 💡 默认居中偏左一点点
-    renderDiskMap(); 
-});
-
+handleTaskbarClick("btn-disk-map", "win-disk-map", renderDiskMap);
 // 绑定图谱的 🔄 刷新按钮
 document.getElementById("refresh-disk-map").addEventListener("click", () => {
     renderDiskMap();
@@ -733,5 +737,36 @@ document.getElementById("max-disk-map").addEventListener("click", function() {
         
         isMapMaximized = false;
         this.innerText = "🔲";
+    }
+});
+
+
+// --- 🔮 结构解码器交互 ---
+handleTaskbarClick("btn-decoder", "win-decoder");
+document.getElementById("close-decoder").addEventListener("click", () => document.getElementById("win-decoder").style.display = "none");
+makeDraggable(document.getElementById("win-decoder"));
+
+// 绑定解码按钮
+document.getElementById("btn-decoder-run").addEventListener("click", async () => {
+    let rawHex = document.getElementById("decoder-input").value.trim();
+    let type = document.getElementById("decoder-type").value;
+    let out = document.getElementById("decoder-output");
+    
+    if(!rawHex) {
+        out.innerText = "请输入数据！";
+        return;
+    }
+    
+    // 💡 自动过滤掉类似 "0000 " 或 "0010 " 这样的 hexdump 偏移地址前缀
+    // 只保留后面的纯十六进制数据
+    let filteredHex = rawHex.replace(/^[0-9a-fA-F]{4}\s+/gm, "");
+    
+    let res = await eel.gui_decode_hex(filteredHex, type)();
+    if(res.success) {
+        out.innerText = res.result;
+        out.style.color = "#00e676"; // 绿色成功
+    } else {
+        out.innerText = "❌ 解码失败！\n\n" + res.error;
+        out.style.color = "#ff1744"; // 红色报错
     }
 });

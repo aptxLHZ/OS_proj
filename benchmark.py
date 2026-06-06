@@ -64,13 +64,11 @@ def init_benchmark_files():
 def run_benchmark_project_1():
     logs = ["=== 项目 1：磁盘压力与极限边界测试 (Stress Test) ==="]
     
-    # 💡 1. 物理全盘重置自净，清除任何历史脏数据
     reset_clean_disk_for_test()
     
     logs.append("\n[*] 开始执行 1.1: Inode 资源耗尽测试...")
     created_count = dirs_created = 0
     try:
-        # 分层创建，防止单目录 30 个槽位的物理极限拦截
         for d in range(30):
             dir_name = f"d_{d}"
             api.mkdir("/", dir_name)
@@ -81,29 +79,21 @@ def run_benchmark_project_1():
     except Exception as e:
         logs.append(f"[+] 成功拦截异常：{str(e)}")
         logs.append(f"[+] 极限承载结果：分配 {dirs_created} 个目录，{created_count} 个文件。")
-    
-    # 💡 无需任何清理代码！下一次跑分开始时会自动物理覆盖重置。
+
     logs.append("\n[*] 开始执行 1.2: 物理数据块耗尽测试 (大文件边界)...")
     reset_clean_disk_for_test()
-    
-    # 💡 终极 API：不仅防休眠，还强行阻止屏幕熄灭 (ES_DISPLAY_REQUIRED = 0x00000002)！
-    import ctypes
-    try: ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001 | 0x00000002)
-    except Exception: pass
     
     try:
         api.create("/", "huge.tmp") 
         fd = api.open_file("/huge.tmp", "w")
         written_bytes = 0
         
-        # 💡 极速优化：一次写入 512KB！缩短 100 倍耗时！
+        # 💡 因为常驻句柄池速度极快，直接每次写入 512KB
         chunk_data = "A" * (1024 * 512) 
         
         while True:
             api.write_file(fd, chunk_data)
             written_bytes += (1024 * 512)
-            # 喘息时间，防止前端卡死断连
-            eel.sleep(0.001)
             
     except Exception as e:
         logs.append(f"[+] 成功拦截异常：{str(e)}")
@@ -112,9 +102,8 @@ def run_benchmark_project_1():
         try: api.close_file(fd)
         except: pass
         
-    # 恢复系统电源策略
-    try: ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
-    except: pass
+    # 💡 千万别忘了这行！！！
+    return "\n".join(logs)
 
 # =====================================================================
 # 测试项目 2：动态多级冗余特征压缩率测试
@@ -218,14 +207,35 @@ def run_benchmark_project_3():
         for i in range(iters): api.rename("/", f"f_{i}", f"n_{i}")
     measure("rename (重命名)", test_rename, 5) # 5次
     
-    # 4. write (512B)
-    def test_write_512(iters):
+    # 4.1 write (单块 512B 内存缓冲写入 - Delayed Write)
+    def test_write_512_cached(iters):
         chunk = "W" * 512
         for i in range(iters):
             fd = api.open_file(f"/n_{i}", "w")
             api.write_file(fd, chunk)
             api.close_file(fd)
-    measure("write (单块 512B 写入)", test_write_512, 5)
+            # 💡 延迟写入：不进行物理 save_superblock()，只修改内存，靠后台 2 秒线程同步
+    measure("write (内存缓冲 512B)", test_write_512_cached, 5)
+
+    # 4.2 write (单块 512B 磁盘直写 - Write-Through, No-Cache)
+    def test_write_512_nocache(iters):
+        chunk = "W" * 512
+        for i in range(iters):
+            fd = api.open_file(f"/n_{i}", "w")
+            api.write_file(fd, chunk)
+            api.close_file(fd)
+            # 物理写超级块
+            disk_core.save_superblock() 
+            
+            # 💡 核心注入：调用系统底层 fsync，强行穿透宿主机(Windows/Mac)的内存缓冲，逼迫真实固态硬盘物理落盘 [13]！
+            import os
+            try:
+                # 获取磁盘 A 的真实文件描述符并强制物理刷盘
+                f_handle = disk_core.get_fd_A()
+                os.fsync(f_handle.fileno()) # 警告：这会带来真实的物理硬件写入延迟！ [13]
+            except Exception:
+                pass
+    measure("write (磁盘直写 512B)", test_write_512_nocache, 5)
     
     # 5. read (512B)
     def test_read_512(iters):

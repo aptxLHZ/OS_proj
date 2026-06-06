@@ -70,7 +70,7 @@ def boot_login():
 def daemon_flush_thread():
     """💡 模拟内核的 pdflush 线程：每 2 秒将内存超级块同步回物理磁盘"""
     while True:
-        time.sleep(100)
+        time.sleep(2)
         if disk_core.superblock_dirty:
             disk_core.save_superblock()
             disk_core.superblock_dirty = False
@@ -314,8 +314,10 @@ def execute_cmd(user_input):
 def gui_login(username, password):
     """供前端调用的安全登录接口"""
     try:
-        from api import login
-        login(username, password)
+        import api
+        api.login(username, password)
+        api.current_working_dir_inode = 1
+        api.current_working_dir_path = "/"
         return {"success": True, "username": username}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -412,6 +414,8 @@ def gui_exit():
     print("[*] 正在安全释放双盘物理驱动器...")
     import os
     import threading
+    import disk_core
+    disk_core.close_all_handles() # 💡 退出前安全关闭物理句柄
     # 延迟 0.2 秒退出，保证前端网页能正常接收到最后一包响应数据
     threading.Timer(0.2, lambda: os._exit(0)).start()
     
@@ -697,6 +701,127 @@ def gui_get_block_details(block_no, target_disk="A"):
     except Exception as e:
         return {"success": False, "error": str(e), "hex_dump": "读取失败", "text_preview": "读取失败"}
     
+    
+@eel.expose
+def gui_decode_hex(hex_string, struct_type):
+    """【物理结构解码器】：输入任意 16 进制字节流，自动反解其数据结构字段"""
+    import struct
+    try:
+        # 1. 清理输入，移除非法字符，转换为 bytes 字节流
+        import re
+        try:
+            # 💡 核心升级：按行智能过滤 hexdump 独有的左侧偏移地址和右侧 ASCII 预览符号 [28]
+            lines = hex_string.strip().split("\n")
+            cleaned_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # a. 💡 智能剔除右侧 ASCII 预览区：自动切掉 '|' 及其后面的所有字符
+                if "|" in line:
+                    line = line.split("|")[0].strip()
+                # b. 💡 智能剔除左侧 4 位 16 进制偏移地址：匹配行首的 "0000 " 或 "0010 "
+                line = re.sub(r'^[0-9a-fA-F]{4}\s+', '', line)
+                cleaned_lines.append(line)
+                
+            # 拼接所有行，并彻底滤除多余的空格和制表符
+            clean_hex = "".join(cleaned_lines).replace(" ", "").replace("\t", "")
+            raw_bytes = bytes.fromhex(clean_hex)
+        except Exception as e:
+            raise Exception(f"输入的十六进制数据格式错误: {e}")
+        
+        # 2. 自动识别类型
+        if struct_type == "auto":
+            if len(raw_bytes) == 32: struct_type = "inode"
+            elif len(raw_bytes) == 16: struct_type = "dir"
+            elif len(raw_bytes) >= 220: struct_type = "super"
+            else: raise Exception(f"长度为 {len(raw_bytes)} 字节，无法自动识别结构。")
+            
+        # 3. 开始解码
+        if struct_type == "inode":
+            if len(raw_bytes) < 32: raise Exception("数据长度不足 32B")
+            from disk_core import INODE_FORMAT
+            unpacked = struct.unpack(INODE_FORMAT, raw_bytes[:32])
+            mode, nlink, uid, gid, size = unpacked[0], unpacked[1], unpacked[2], unpacked[3], unpacked[4]
+            addr = list(unpacked[5:15])
+            
+            type_desc = "📁 目录" if mode == 1 else ("📄 普通文件" if mode == 2 else ("🗜️ 压缩文件" if mode == 3 else ("🔗 软链接" if mode == 4 else "❌ 未分配/空闲")))
+            owner_name = "root" if uid == 1 else ("guest" if uid == 99 else f"usr{uid-1}")
+            
+            res = f"🔮 【解析结果：磁盘 i 节点 (Inode)】\n"
+            res += f"  - 文件类型 : {type_desc} (mode={mode})\n"
+            res += f"  - 链接计数 : {nlink} (di_nlink)\n"
+            res += f"  - 所有者   : {owner_name} (uid={uid})\n"
+            res += f"  - 文件大小 : {size} 字节\n"
+            res += f"  - 物理寻址指针 addr[0..9] :\n"
+            for i in range(10):
+                res += f"    addr[{i}] = {addr[i]}\n"
+            return {"success": True, "result": res}
+            
+            
+        elif struct_type == "super":
+            if len(raw_bytes) < 220: raise Exception("数据长度不足 220B")
+            from disk_core import SUPERBLOCK_FORMAT
+            unpacked = struct.unpack(SUPERBLOCK_FORMAT, raw_bytes[:220])
+            isize, fsize, nfree = unpacked[0], unpacked[1], unpacked[2]
+            free_stack = list(unpacked[3:53])
+            ninode = unpacked[53]
+            inode_stack = list(unpacked[54:104])
+            
+            res = f"🔮 【解析结果：超级块 (Super Block)】\n"
+            res += f"  - i节点物理块数 : {isize} 块\n"
+            res += f"  - 磁盘总物理块数 : {fsize} 块\n"
+            res += f"  - 内存空闲盘块数 : {nfree}\n"
+            res += f"  - 空闲盘块号栈   : {free_stack[:nfree]}\n"
+            res += f"  - 内存空闲i节点数: {ninode}\n"
+            res += f"  - 空闲i节点号栈  : {inode_stack[:ninode]}\n"
+            return {"success": True, "result": res}
+            
+        elif struct_type == "dir":
+            if len(raw_bytes) < 16: raise Exception("数据长度不足 16B")
+            
+            # 💡 核心升级：循环解析 512 字节块内所有的 16 字节目录项！
+            res = f"🔮 【解析结果：目录表 (Directory Block)】\n"
+            res += f"  {'索引':<5} {'i节点号':<8} {'文件名/目录名'}\n"
+            res += f"  {'-'*40}\n"
+            
+            entry_count = 0
+            # 以 16 字节为单位进行步进扫描
+            for i in range(0, len(raw_bytes), 16):
+                if i + 16 > len(raw_bytes):
+                    break
+                unpacked = struct.unpack('H 14s', raw_bytes[i : i+16])
+                ino = unpacked[0]
+                name = unpacked[1].decode('utf-8', errors='replace').strip('\x00')
+                
+                if ino != 0: # 只显示有效的目录项
+                    res += f"  [{i//16:<2}]  {ino:<8}  '{name}'\n"
+                    entry_count += 1
+                    
+            if entry_count == 0:
+                res += "  (该目录块当前为空或无有效目录项)\n"
+            return {"success": True, "result": res}
+            
+        elif struct_type == "leader":
+            if len(raw_bytes) < 4: raise Exception("数据长度不足")
+            count = struct.unpack('I', raw_bytes[0:4])[0]
+            if count > 50 or count < 0: raise Exception(f"异常的组长块计数 count={count}")
+            
+            blocks = list(struct.unpack('I' * count, raw_bytes[4 : 4 + 4 * count]))
+            
+            # 💡 核心修正：在标准成组链接中，下一组的组长指针，就是本组的第一个块号！
+            next_leader = blocks[0] if count > 0 else 0
+            
+            res = f"🔮 【解析结果：成组空闲块 (Leader Block)】\n"
+            res += f"  - 本组空闲盘块数 : {count}\n"
+            res += f"  - 本组物理盘块号 : {blocks}\n"
+            res += f"  - 下一组组长指针 : {next_leader if next_leader != 0 else '0 (链表终点 EOF)'}\n"
+            return {"success": True, "result": res}
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 # 格式化 = 物理清零 + 逻辑重建
 
