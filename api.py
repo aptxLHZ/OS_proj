@@ -370,32 +370,47 @@ def delete(parent_path, filename):
     _soft_delete(parent_path, filename, expected_mode=2)
 
 def truncate_inode(disk_inode):
-    """【物理截断】：彻底释放该文件占用的所有混合索引物理块"""
-    from disk_core import bfree, read_block
+    """【物理截断全能版】：彻底释放直接、一次间址、二次间址的所有物理块！绝不泄漏一滴空间！"""
+    from disk_core import bfree, read_block, BLOCKSIZ
     import struct
     
-    # 1. 释放直接索引块 (addr[0] ~ addr[7])
+    # 1. 释放直接索引 (0~7)
     for i in range(8):
         if disk_inode.addr[i] != 0:
             bfree(disk_inode.addr[i])
             disk_inode.addr[i] = 0
             
-    # 2. 释放一次间址块里的所有子块 (addr[8])
+    # 2. 释放一次间址块 (8)
     if disk_inode.addr[8] != 0:
         ind1_block = disk_inode.addr[8]
         try:
             ind1_data = read_block(ind1_block)
             for i in range(0, BLOCKSIZ, 2):
                 phys = struct.unpack('H', ind1_data[i:i+2])[0]
-                if phys != 0:
-                    bfree(phys) # 释放子数据块
-        except Exception:
-            pass
-        bfree(ind1_block) # 释放间址块本身
+                if phys != 0: bfree(phys) # 回收子块
+        except Exception: pass
+        bfree(ind1_block) # 回收间址块本身
         disk_inode.addr[8] = 0
         
-    # (如果用到了 addr[9] 二次间址，也应同理递归释放，此处略去以保持简洁)
-    disk_inode.addr[9] = 0
+    # 3. 💡 终极修复：释放二次间址块 (9) - 解决巨型文件存储泄漏！
+    if disk_inode.addr[9] != 0:
+        ind2_block = disk_inode.addr[9]
+        try:
+            ind2_data = read_block(ind2_block)
+            for i in range(0, BLOCKSIZ, 2): # 遍历一级目录
+                ind1_block = struct.unpack('H', ind2_data[i:i+2])[0]
+                if ind1_block != 0:
+                    try:
+                        ind1_data = read_block(ind1_block)
+                        for j in range(0, BLOCKSIZ, 2): # 遍历最终数据块
+                            phys = struct.unpack('H', ind1_data[j:j+2])[0]
+                            if phys != 0: bfree(phys) # 递归回收所有真正的数据块！
+                    except Exception: pass
+                    bfree(ind1_block)
+        except Exception: pass
+        bfree(ind2_block)
+        disk_inode.addr[9] = 0
+        
     disk_inode.size = 0
 
 def open_file(filepath, mode='r'):
@@ -676,18 +691,21 @@ def hard_delete(parent_path, name):
     
     if target_inode_info[1] == 0:
         # 引用计数归零：真正释放物理资源并物理清空 Inode
-        from disk_core import bfree, ifree
+        from disk_core import bfree, ifree, DiskInode
+        from kernel import write_inode
+        
         if mode == 1: # 目录
             target_block = target_inode_info[5]
-            bfree(target_block)
+            if target_block != 0: bfree(target_block)
         elif mode == 4: # 软链接
-            bfree(target_inode_info[5])
-        else: # 普通文件
-            for block in target_inode_info[5:15]:
-                if block != 0:
-                    bfree(block)
+            target_block = target_inode_info[5]
+            if target_block != 0: bfree(target_block)
+        else: # 💡 普通文件/压缩文件：调用全能回收器释放多级索引！
+            # 构建一个临时的 Inode 对象，把那 10 个地址传给回收器
+            temp_inode = DiskInode(mode=mode, addr=list(target_inode_info[5:15]))
+            truncate_inode(temp_inode)
                     
-        from disk_core import DiskInode
+        # 擦除 Inode 数据，彻底断绝诈尸
         empty_inode = DiskInode(mode=0, nlink=0, uid=0, gid=0, size=0, addr=[0]*10)
         write_inode(target_ino, empty_inode)
         ifree(target_ino)
@@ -695,14 +713,15 @@ def hard_delete(parent_path, name):
     else:
         # 引用不为 0：仅写回更新后的引用计数，物理盘块和 Inode 依然完整
         from disk_core import DiskInode
+        from kernel import write_inode
         updated_inode = DiskInode(
             mode=target_inode_info[0], nlink=target_inode_info[1], 
             uid=target_inode_info[2], gid=target_inode_info[3], 
-            size=target_inode_info[4], addr=target_inode_info[5:15]
+            size=target_inode_info[4], addr=list(target_inode_info[5:15])
         )
         write_inode(target_ino, updated_inode)
         print(f"[-] '{name}' 目录关系已切断，由于还被其他链接引用，物理 Inode {target_ino} 依然完好留存 (当前引用: {target_inode_info[1]})")
-        
+       
     # 4. 从父目录中擦除名字
     dir_data[target_offset:target_offset+16] = struct.pack('H 14s', 0, b'\x00'*14)
     from disk_core import write_block

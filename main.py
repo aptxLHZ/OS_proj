@@ -739,24 +739,50 @@ def gui_decode_hex(hex_string, struct_type):
             else: raise Exception(f"长度为 {len(raw_bytes)} 字节，无法自动识别结构。")
             
         # 3. 开始解码
+        # main.py -> gui_decode_hex 内部替换 inode 分支：
+
         if struct_type == "inode":
             if len(raw_bytes) < 32: raise Exception("数据长度不足 32B")
             from disk_core import INODE_FORMAT
-            unpacked = struct.unpack(INODE_FORMAT, raw_bytes[:32])
-            mode, nlink, uid, gid, size = unpacked[0], unpacked[1], unpacked[2], unpacked[3], unpacked[4]
-            addr = list(unpacked[5:15])
             
-            type_desc = "📁 目录" if mode == 1 else ("📄 普通文件" if mode == 2 else ("🗜️ 压缩文件" if mode == 3 else ("🔗 软链接" if mode == 4 else "❌ 未分配/空闲")))
-            owner_name = "root" if uid == 1 else ("guest" if uid == 99 else f"usr{uid-1}")
+            # 💡 核心升级：循环解析粘贴进来的所有 32 字节块！
+            res = f"🔮 【解析结果：磁盘 i 节点块 (Inode Block)】\n"
+            res += f"  (自动过滤空闲节点，仅显示被占用的 Inode)\n"
+            res += f" {'='*45}\n"
             
-            res = f"🔮 【解析结果：磁盘 i 节点 (Inode)】\n"
-            res += f"  - 文件类型 : {type_desc} (mode={mode})\n"
-            res += f"  - 链接计数 : {nlink} (di_nlink)\n"
-            res += f"  - 所有者   : {owner_name} (uid={uid})\n"
-            res += f"  - 文件大小 : {size} 字节\n"
-            res += f"  - 物理寻址指针 addr[0..9] :\n"
-            for i in range(10):
-                res += f"    addr[{i}] = {addr[i]}\n"
+            valid_count = 0
+            # 以 32 字节为一个 Inode 进行步进扫描
+            for i in range(0, len(raw_bytes), 32):
+                if i + 32 > len(raw_bytes):
+                    break
+                unpacked = struct.unpack(INODE_FORMAT, raw_bytes[i : i+32])
+                mode, nlink, uid, gid, size = unpacked[0:5]
+                addr = list(unpacked[5:15])
+                
+                # 只显示有效的 Inode
+                if mode != 0:
+                    type_desc = "📁 目录" if mode == 1 else ("📄 普通文件" if mode == 2 else ("🗜️ 压缩文件" if mode == 3 else ("🔗 软链接" if mode == 4 else "❌ 未知")))
+                    owner_name = "root" if uid == 1 else ("guest" if uid == 99 else f"usr{uid-1}")
+                    
+                    # 简化物理地址输出：过滤掉 0，只显示实际分配的物理块！
+                    used_addrs = [str(a) for a in addr if a != 0]
+                    addr_str = f"[{', '.join(used_addrs)}]" if used_addrs else "[暂无分配]"
+                    
+                    # 算出它在当前粘贴文本里的相对索引位置
+                    relative_idx = i // 32
+                    
+                    res += f"📌 [偏移量 {i:04X}] 块内第 {relative_idx} 个节点：\n"
+                    res += f"  - 文件类型 : {type_desc} (mode={mode})\n"
+                    res += f"  - 链接计数 : {nlink} (di_nlink)\n"
+                    res += f"  - 所有者   : {owner_name} (uid={uid})\n"
+                    res += f"  - 文件大小 : {size} 字节\n"
+                    res += f"  - 物理块号 : {addr_str}\n"
+                    res += f" {'-'*45}\n"
+                    valid_count += 1
+                    
+            if valid_count == 0:
+                res += "  (该区域全为 0，无任何被分配的 Inode)\n"
+                
             return {"success": True, "result": res}
             
             
